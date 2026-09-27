@@ -1,5 +1,5 @@
 # Build on Debian (glibc) to match the distroless runtime: @node-rs/argon2 ships native binaries.
-FROM node:24-bookworm-slim AS build
+FROM node:24-trixie-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
@@ -8,7 +8,7 @@ COPY src src
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
 # No shell, no package manager, not root.
-FROM gcr.io/distroless/nodejs24-debian12:nonroot
+FROM gcr.io/distroless/nodejs24-debian13:nonroot
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/package.json ./

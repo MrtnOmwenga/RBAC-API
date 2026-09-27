@@ -4,9 +4,10 @@ import { migrations } from './migrations';
 
 /**
  * Applies migrations as the owner (`ownerUrl`), then makes sure the API's login role (the user in
- * `appUrl`) exists, can log in with that password and is a member of `rbac_app`.
+ * `appUrl`) exists, can log in with its password and is a member of `rbac_app`. The password comes
+ * from `appUrl` or, to keep it out of URLs, from `appPassword`.
  */
-export async function migrate(ownerUrl: string, appUrl?: string): Promise<void> {
+export async function migrate(ownerUrl: string, appUrl?: string, appPassword?: string): Promise<void> {
   const db = new Kysely<unknown>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: ownerUrl, max: 1 }) }) });
   try {
     const { error, results } = await new Migrator({ db, provider: { getMigrations: () => Promise.resolve(migrations) } }).migrateToLatest();
@@ -16,11 +17,13 @@ export async function migrate(ownerUrl: string, appUrl?: string): Promise<void> 
     if (error) throw error instanceof Error ? error : new Error(`migration failed: ${JSON.stringify(error)}`);
 
     if (appUrl) {
-      const { username, password } = new URL(appUrl);
+      const { username, password: inUrl } = new URL(appUrl);
       const role = decodeURIComponent(username);
+      const password = inUrl ? decodeURIComponent(inUrl) : appPassword;
+      if (!password) throw new Error('The API role needs a password: put it in DATABASE_URL or APP_DB_PASSWORD');
       await db.transaction().execute(async (trx) => {
         await sql`
-          select set_config('rbac.login', ${role}, true), set_config('rbac.password', ${decodeURIComponent(password)}, true)
+          select set_config('rbac.login', ${role}, true), set_config('rbac.password', ${password}, true)
         `.execute(trx);
         await sql`
           do $$ begin
@@ -46,7 +49,7 @@ if (require.main === module) {
     console.error('Set MIGRATION_DATABASE_URL (the database owner) to run migrations');
     process.exit(1);
   }
-  migrate(ownerUrl, process.env.DATABASE_URL).then(
+  migrate(ownerUrl, process.env.DATABASE_URL, process.env.APP_DB_PASSWORD).then(
     () => console.log('migrations applied'),
     (err: unknown) => {
       console.error(err);
