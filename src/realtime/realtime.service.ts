@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
-import { type Connection, Hocuspocus } from '@hocuspocus/server';
+import { type Connection, Hocuspocus, OutgoingMessage } from '@hocuspocus/server';
 import type { Kysely, Transaction } from 'kysely';
 import { Client } from 'pg';
 import { WebSocketServer } from 'ws';
@@ -66,6 +66,8 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   private readonly orgOf = new Map<string, string>(); // room name → organization
   private readonly editors = new Map<string, Set<string>>(); // room name → users who edited since the last save
   private readonly refreshing = new Map<string, Promise<void>>(); // organization → running re-check
+  private readonly locked = new Set<Connection<Context>>(); // made read-only pending a re-check
+  private readonly fallbacks = new Map<string, NodeJS.Timeout>(); // organization → re-check if no notification comes
   private listener?: Client;
   private closing = false;
   readonly hocuspocus: Hocuspocus<Context>;
@@ -124,6 +126,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     this.hocuspocus.flushPendingStores();
     this.hocuspocus.closeConnections();
     this.sockets.close();
+    for (const timer of this.fallbacks.values()) clearTimeout(timer);
     await this.listener?.end().catch(() => undefined);
     await Promise.all(this.refreshing.values());
   }
@@ -198,6 +201,34 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   }
 
   /**
+   * Fails closed: every section connection in the organization turns read-only now, before the
+   * permission change commits. The re-check that follows the notification restores the ones still
+   * allowed to write. If the change rolls back there is no notification, so a fallback re-check
+   * runs after a few seconds either way.
+   */
+  lock(orgId: string): void {
+    for (const connection of this.sectionConnections(orgId)) {
+      if (!connection.readOnly) {
+        connection.readOnly = true;
+        this.locked.add(connection);
+      }
+    }
+    clearTimeout(this.fallbacks.get(orgId));
+    const fallback = setTimeout(() => { void this.refresh(orgId); }, 3000);
+    fallback.unref();
+    this.fallbacks.set(orgId, fallback);
+  }
+
+  private *sectionConnections(orgId: string): Generator<Connection<Context>> {
+    for (const [room, document] of this.hocuspocus.documents) {
+      if (this.orgOf.get(room) !== orgId) continue;
+      for (const connection of document.getConnections() as Connection<Context>[]) {
+        if (connection.context.target.kind === 'section') yield connection;
+      }
+    }
+  }
+
+  /**
    * Re-checks every open connection in an organization after a permission change. Runs are
    * chained per organization so a burst of changes can't interleave.
    */
@@ -212,6 +243,8 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   }
 
   private async recheck(orgId: string): Promise<void> {
+    clearTimeout(this.fallbacks.get(orgId));
+    this.fallbacks.delete(orgId);
     for (const [room, document] of this.hocuspocus.documents) {
       if (this.orgOf.get(room) !== orgId) continue;
       for (const connection of document.getConnections() as Connection<Context>[]) {
@@ -220,6 +253,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
           const principal = await loadPrincipal(trx, { kind: 'user', id: context.userId, orgId });
           return principal ? this.accessFor(trx, principal, context.target) : 'none';
         });
+        const wasLocked = this.locked.delete(connection);
         if (access === 'none') {
           connection.sendStateless(JSON.stringify({ type: 'access', access }));
           connection.close({ code: 4403, reason: 'Access revoked' });
@@ -229,6 +263,11 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
           connection.sendStateless(JSON.stringify({ type: 'refresh' }));
         } else {
           connection.readOnly = access !== 'edit';
+          // Updates sent during the lock were refused, and clients don't resend on their own. Asking
+          // for a sync makes the client send whatever the server is missing: nothing is lost.
+          if (wasLocked && access === 'edit') {
+            connection.send(new OutgoingMessage(connection.messageAddress).createSyncMessage().writeFirstSyncStepFor(document).toUint8Array());
+          }
         }
         if (access !== context.access) {
           context.access = access;

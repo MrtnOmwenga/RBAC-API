@@ -4,7 +4,7 @@ import { authorize } from '../common/http';
 import { findDepartment, findProject } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
 import { listFilter } from '../policy/policy';
-import { announceAccessChange } from '../briefings/access';
+import { AccessChanges } from '../realtime/access-changes';
 
 type ProjectRow = Awaited<ReturnType<typeof findProject>>;
 
@@ -13,7 +13,11 @@ const resourceOf = (p: ProjectRow) => ({ orgId: p.org_id, departmentId: p.depart
 
 @Injectable()
 export class ProjectsService {
-  constructor(private readonly tenant: TenantContext, private readonly audit: AuditService) {}
+  constructor(
+    private readonly tenant: TenantContext,
+    private readonly audit: AuditService,
+    private readonly access: AccessChanges,
+  ) {}
 
   async create(input: { name: string; departmentId: string }) {
     const { db, principal } = this.tenant;
@@ -57,6 +61,6 @@ export class ProjectsService {
     authorize(principal, 'project:delete', resourceOf(project));
     await db.deleteFrom('projects').where('id', '=', id).execute();
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'project.delete', resourceType: 'project', resourceId: id });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
   }
 }
