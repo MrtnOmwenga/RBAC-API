@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "jest",
+  "jest": {
+    "projectType": "custom",
+    "config": {
+      "preset": "ts-jest",
+      "testEnvironment": "node",
+      "testMatch": ["<rootDir>/src/**/*.spec.ts"]
+    },
+    "enableFindRelatedTests": true
+  },
+  "checkers": ["typescript"],
+  "tsconfigFile": "tsconfig.json",
+  "mutate": ["src/policy/policy.ts", "src/audit/chain.ts", "src/common/crypto.ts", "src/auth/tokens.ts"],
+  "reporters": ["clear-text", "progress", "html"],
+  "htmlReporter": { "fileName": "reports/mutation/index.html" },
+  "thresholds": { "high": 98, "low": 95, "break": 95 },
+  "timeoutMS": 20000
+}
