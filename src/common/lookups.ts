@@ -15,7 +15,7 @@ export async function findDepartment(trx: Transaction<Database>, id: string) {
 }
 
 export async function findMember(trx: Transaction<Database>, id: string) {
-  const row = await trx.selectFrom('users').select(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'disabled_at', 'created_at'])
+  const row = await trx.selectFrom('users').select(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'clearance', 'disabled_at', 'created_at'])
     .where('id', '=', id).executeTakeFirst();
   if (!row) throw new NotFoundException('No such member');
   return row;

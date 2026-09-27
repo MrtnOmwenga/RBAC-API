@@ -16,7 +16,7 @@ describe('sign-up and login', () => {
   test('sign-up creates an organization and its first admin; the token works', async () => {
     const founder = await signUp();
     const me = await t.http().get('/me').set(bearer(founder.accessToken)).expect(200);
-    expect(me.body).toEqual({ kind: 'user', id: founder.userId, orgId: founder.orgId, role: 'org_admin', departmentId: null });
+    expect(me.body).toEqual({ kind: 'user', id: founder.userId, orgId: founder.orgId, role: 'org_admin', departmentId: null, clearance: 0 });
   });
 
   test('registering the same email twice is a 409; unknown fields are rejected', async () => {

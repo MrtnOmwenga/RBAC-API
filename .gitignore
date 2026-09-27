@@ -5,3 +5,7 @@ reports
 .stryker-tmp
 .env
 *.log
+web/node_modules
+web/dist
+test-results
+playwright-report

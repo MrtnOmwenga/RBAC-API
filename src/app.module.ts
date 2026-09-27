@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { type DynamicModule, type INestApplication, Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import express from 'express';
 import helmet from 'helmet';
 import { Logger, LoggerModule } from 'nestjs-pino';
 import { ApiKeysController } from './api-keys/api-keys.controller';
@@ -11,6 +14,11 @@ import { AuditService } from './audit/audit.service';
 import { AuthController, MeController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
 import { AuthenticationGuard, TenantInterceptor } from './auth/authentication';
+import { BriefingsController } from './briefings/briefings.controller';
+import { BriefingsService } from './briefings/briefings.service';
+import { RealtimeService } from './realtime/realtime.service';
+import { DemoController } from './demo/demo.controller';
+import { DemoService } from './demo/demo.service';
 import { ProblemDetailsFilter } from './common/http';
 import { CONFIG, type Config } from './config/config';
 import { DatabaseModule } from './database/database.module';
@@ -51,21 +59,21 @@ export class AppModule {
           { name: 'default', ttl: 60_000, limit: config.RATE_LIMIT_PER_MINUTE },
           {
             // Login, sign-up and refresh get a much tighter budget: guessing credentials is the
-            // attack they face. Keyed by client address.
+            // attack they face. Creating demo agencies shares it. Keyed by client address.
             name: 'auth',
             ttl: 60_000,
             limit: config.AUTH_RATE_LIMIT_PER_MINUTE,
-            skipIf: (ctx) => ctx.getClass() !== AuthController,
+            skipIf: (ctx) => ctx.getClass() !== AuthController && ctx.getClass() !== DemoController,
           },
         ]),
         DatabaseModule,
       ],
       controllers: [
         AuthController, MeController, DepartmentsController, MembersController, ProjectsController, DocumentsController,
-        ApiKeysController, AuditController, HealthController,
+        ApiKeysController, AuditController, HealthController, BriefingsController, DemoController,
       ],
       providers: [
-        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService,
+        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService, DemoService,
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthenticationGuard },
         { provide: APP_INTERCEPTOR, useClass: TenantInterceptor },
@@ -81,6 +89,9 @@ export function configureApp(app: INestApplication): void {
   app.use(helmet());
   const http = app.getHttpAdapter().getInstance() as { set(key: string, value: unknown): void };
   http.set('trust proxy', 1);
+  // The demo UI shares the API's origin, so its WebSocket and requests need no CORS.
+  const web = resolve(app.get<Config>(CONFIG).WEB_DIR);
+  if (existsSync(resolve(web, 'index.html'))) app.use(express.static(web, { index: 'index.html', maxAge: '1h' }));
   app.enableShutdownHooks();
 }
 

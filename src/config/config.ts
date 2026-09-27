@@ -12,6 +12,11 @@ const schema = z.object({
   LOGIN_LOCK_MINUTES: z.coerce.number().int().positive().default(15),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(300),
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(10),
+  // Public "Redacted" demo: anyone can create a throwaway agency, deleted after DEMO_TTL_MINUTES.
+  DEMO_MODE: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  DEMO_TTL_MINUTES: z.coerce.number().int().positive().default(120),
+  // The built demo UI (web/dist), served from the API's own origin when present.
+  WEB_DIR: z.string().default('web/dist'),
 });
 
 export type Config = z.infer<typeof schema>;
