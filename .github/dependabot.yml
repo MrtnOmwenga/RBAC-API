@@ -6,11 +6,27 @@ updates:
     groups:
       nestjs: { patterns: ['@nestjs/*'] }
       dev-dependencies: { dependency-type: development }
+    ignore:
+      # ES-module-only releases: wait until the project moves off CommonJS
+      - dependency-name: '@nestjs/common'
+        versions: ['>=12']
+      - dependency-name: '@nestjs/core'
+        versions: ['>=12']
+      - dependency-name: '@nestjs/platform-express'
+        versions: ['>=12']
+      - dependency-name: kysely
+        versions: ['>=0.29']
+      # typescript-eslint and ts-jest don't support TypeScript 7 yet
+      - dependency-name: typescript
+        versions: ['>=7']
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly }
     groups:
       web: { patterns: ['*'] }
+    ignore:
+      - dependency-name: typescript
+        versions: ['>=7']
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
