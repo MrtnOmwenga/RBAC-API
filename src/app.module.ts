@@ -14,6 +14,8 @@ import { AuthenticationGuard, TenantInterceptor } from './auth/authentication';
 import { BriefingsController } from './briefings/briefings.controller';
 import { BriefingsService } from './briefings/briefings.service';
 import { RealtimeService } from './realtime/realtime.service';
+import { DemoController } from './demo/demo.controller';
+import { DemoService } from './demo/demo.service';
 import { ProblemDetailsFilter } from './common/http';
 import { CONFIG, type Config } from './config/config';
 import { DatabaseModule } from './database/database.module';
@@ -54,21 +56,21 @@ export class AppModule {
           { name: 'default', ttl: 60_000, limit: config.RATE_LIMIT_PER_MINUTE },
           {
             // Login, sign-up and refresh get a much tighter budget: guessing credentials is the
-            // attack they face. Keyed by client address.
+            // attack they face. Creating demo agencies shares it. Keyed by client address.
             name: 'auth',
             ttl: 60_000,
             limit: config.AUTH_RATE_LIMIT_PER_MINUTE,
-            skipIf: (ctx) => ctx.getClass() !== AuthController,
+            skipIf: (ctx) => ctx.getClass() !== AuthController && ctx.getClass() !== DemoController,
           },
         ]),
         DatabaseModule,
       ],
       controllers: [
         AuthController, MeController, DepartmentsController, MembersController, ProjectsController, DocumentsController,
-        ApiKeysController, AuditController, HealthController, BriefingsController,
+        ApiKeysController, AuditController, HealthController, BriefingsController, DemoController,
       ],
       providers: [
-        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService,
+        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService, DemoService,
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthenticationGuard },
         { provide: APP_INTERCEPTOR, useClass: TenantInterceptor },
