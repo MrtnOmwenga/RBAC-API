@@ -5,12 +5,14 @@ import { hashPassword } from '../auth/passwords';
 import { authorize } from '../common/http';
 import { findDepartment, findMember } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
-import { canAssignRole, canManageMember, hasDepartment, listFilter, type Role } from '../policy/policy';
+import { canAssignRole, canManageMember, canSetClearance, CLEARANCES, hasDepartment, listFilter, type Role } from '../policy/policy';
+import { announceAccessChange } from '../briefings/access';
 
 type MemberRow = Awaited<ReturnType<typeof findMember>>;
 
 const view = (m: MemberRow) => ({
-  id: m.id, email: m.email, name: m.name, role: m.role, departmentId: m.department_id, disabled: m.disabled_at !== null, createdAt: m.created_at,
+  id: m.id, email: m.email, name: m.name, role: m.role, departmentId: m.department_id, clearance: m.clearance,
+  disabled: m.disabled_at !== null, createdAt: m.created_at,
 });
 
 export interface NewMember {
@@ -33,7 +35,7 @@ export class MembersService {
     const member = await db.insertInto('users').values({
       org_id: principal.orgId, email: input.email, name: input.name, password_hash: await hashPassword(input.password),
       role: input.role, department_id: input.departmentId,
-    }).returning(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'disabled_at', 'created_at']).executeTakeFirstOrThrow();
+    }).returning(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'clearance', 'disabled_at', 'created_at']).executeTakeFirstOrThrow();
     await this.audit.record(db, principal.orgId, actorOf(principal), {
       action: 'member.create', resourceType: 'user', resourceId: member.id, detail: { role: input.role, departmentId: input.departmentId },
     });
@@ -44,7 +46,7 @@ export class MembersService {
     const { db, principal } = this.tenant;
     const filter = listFilter(principal, 'member:read');
     if (!filter) throw new ForbiddenException('Not allowed to member:read');
-    let query = db.selectFrom('users').select(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'disabled_at', 'created_at']).orderBy('name');
+    let query = db.selectFrom('users').select(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'clearance', 'disabled_at', 'created_at']).orderBy('name');
     if (filter.departmentId) query = query.where('department_id', '=', filter.departmentId);
     return (await query.execute()).map(view);
   }
@@ -56,8 +58,11 @@ export class MembersService {
     return view(member);
   }
 
-  /** Changes role and/or department. The new combination must be one the actor may assign. */
-  async update(id: string, changes: { role?: Role; departmentId?: string | null }) {
+  /**
+   * Changes role, department and/or clearance. A new role/department must be one the actor may
+   * assign; clearance is for organization admins only, and never above their own.
+   */
+  async update(id: string, changes: { role?: Role; departmentId?: string | null; clearance?: number }) {
     const { db, principal } = this.tenant;
     const member = await findMember(db, id);
     authorize(principal, 'member:update', { orgId: member.org_id, departmentId: member.department_id });
@@ -66,15 +71,25 @@ export class MembersService {
 
     const role = changes.role ?? member.role;
     const departmentId = changes.departmentId !== undefined ? changes.departmentId : (hasDepartment(role) ? member.department_id : null);
-    if (departmentId) await findDepartment(db, departmentId);
-    if (!canAssignRole(principal, { id: member.id, role, departmentId })) throw new ForbiddenException(`Not allowed to make this member a ${role} there`);
+    if (changes.role !== undefined || changes.departmentId !== undefined) {
+      if (departmentId) await findDepartment(db, departmentId);
+      if (!canAssignRole(principal, { id: member.id, role, departmentId })) throw new ForbiddenException(`Not allowed to make this member a ${role} there`);
+    }
+    const clearance = changes.clearance ?? member.clearance;
+    if (changes.clearance !== undefined && !canSetClearance(principal, member, changes.clearance)) {
+      throw new ForbiddenException(`Not allowed to grant ${CLEARANCES[changes.clearance] ?? 'that'} clearance`);
+    }
 
-    const updated = await db.updateTable('users').set({ role, department_id: departmentId }).where('id', '=', id)
-      .returning(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'disabled_at', 'created_at']).executeTakeFirstOrThrow();
+    const updated = await db.updateTable('users').set({ role, department_id: departmentId, clearance }).where('id', '=', id)
+      .returning(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'clearance', 'disabled_at', 'created_at']).executeTakeFirstOrThrow();
     await this.audit.record(db, principal.orgId, actorOf(principal), {
       action: 'member.update', resourceType: 'user', resourceId: id,
-      detail: { from: { role: member.role, departmentId: member.department_id }, to: { role, departmentId } },
+      detail: {
+        from: { role: member.role, departmentId: member.department_id, clearance: CLEARANCES[member.clearance] },
+        to: { role, departmentId, clearance: CLEARANCES[clearance] },
+      },
     });
+    await announceAccessChange(db, principal.orgId);
     return view(updated);
   }
 
@@ -89,5 +104,6 @@ export class MembersService {
     await db.updateTable('users').set({ disabled_at: new Date() }).where('id', '=', id).execute();
     await this.auth.revokeAllFor(db, id);
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'member.disable', resourceType: 'user', resourceId: id });
+    await announceAccessChange(db, principal.orgId);
   }
 }

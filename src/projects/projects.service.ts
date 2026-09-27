@@ -4,6 +4,7 @@ import { authorize } from '../common/http';
 import { findDepartment, findProject } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
 import { listFilter } from '../policy/policy';
+import { announceAccessChange } from '../briefings/access';
 
 type ProjectRow = Awaited<ReturnType<typeof findProject>>;
 
@@ -56,5 +57,6 @@ export class ProjectsService {
     authorize(principal, 'project:delete', resourceOf(project));
     await db.deleteFrom('projects').where('id', '=', id).execute();
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'project.delete', resourceType: 'project', resourceId: id });
+    await announceAccessChange(db, principal.orgId);
   }
 }
