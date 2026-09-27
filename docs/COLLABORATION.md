@@ -1,12 +1,13 @@
 # Collaboration and permissions
 
 How RBAC-API lets several people edit the same document live while each of them sees and changes
-only what their permissions allow. It covers why permissions work per section and how word-level
-redaction could work, how concurrent edits merge, and how permission changes reach connections
+only what their permissions allow. It covers why permissions work per section, how words inside a
+section are classified, how concurrent edits merge, and how permission changes reach connections
 that are already open, including a race condition and how it's closed.
 
-Code: `src/realtime/`, `src/briefings/`, `src/policy/policy.ts`. Tests: `test/realtime.e2e-spec.ts`,
-`test/briefings.e2e-spec.ts`, `test/browser/redacted.spec.ts`.
+Code: `src/realtime/` (including `projection.ts`), `src/briefings/`, `src/policy/policy.ts`. Tests:
+`test/realtime.e2e-spec.ts`, `test/marked-words.e2e-spec.ts`, `test/briefings.e2e-spec.ts`,
+`src/realtime/projection.spec.ts`, `test/browser/redacted.spec.ts`.
 
 ## 1. Permissions on parts of a document
 
@@ -35,10 +36,10 @@ reader can't see, doesn't work with collaborative editing:
 - The only safe unit of hiding is a whole document. So hiding has to be built into the document's
   *structure*, not done by filtering its updates.
 
-### Word-level redaction: options
+### Word-level redaction: options considered
 
-Redacting words inside a sentence ("The asset is ██████████, deputy minister") needs a finer
-structure. Three designs:
+Redacting words inside a sentence ("NIGHTJAR is the ████████████████████████") needs a finer
+structure. Three designs were considered:
 
 | | How it works | Guarantee | Cost |
 |---|---|---|---|
@@ -46,27 +47,43 @@ structure. Three designs:
 | **2. Server-made projections** | The server holds the full text and derives a redacted copy per clearance level, rewritten on every change. Readers below the top level get their level's copy. | Hidden text never leaves the server. Simple and robust. | Lower-cleared readers can't edit that section: a projection can't take edits back. |
 | **3. Encrypted spans** | Everyone receives every span, encrypted with a key per clearance level; cleared clients decrypt. | Relies on key management instead of the server. | Reveals exact lengths; revoking access means re-encrypting; key distribution becomes the hard problem. |
 
-### Proposed: mark to classify, project to read
+### Built: mark to classify, project to read
 
-A hybrid of 1 and 2 keeps option 2's safety without option 1's editor work:
+A hybrid of 1 and 2 keeps option 2's safety without option 1's editor work.
 
-- **Authoring is like formatting.** A cleared editor selects words and applies a classification
-  mark, the way they'd make text bold. It's one editor and one document per section, so it has
-  none of option 1's nested-editor problems.
-- **The master stays on the server.** The marked-up section is the source of truth, and only
-  members cleared for *every* mark in it may connect to it and edit it.
-- **Everyone else reads a projection.** On each change (debounced), the server derives one
-  redacted copy per clearance level. Marked spans above that level become placeholder nodes
-  carrying a rounded length. Each projection is a read-only room of its own
-  (`section:<id>:<level>`), so the hidden words are never sent to them.
-- **The trade-off, stated plainly:** a member who can't see every word of a section can't edit
-  that section. They can still edit the sections that are fully within their clearance. This
-  matches how classified documents are handled on paper: portion markings on the original,
-  sanitized copies for lower levels.
+- **Classifying words is like formatting.** A cleared editor selects words and applies a
+  classification mark, the way they'd make text bold. The editor offers only levels up to their own
+  clearance, and the server enforces it (below). The Yjs binding stores the mark as a formatting
+  attribute, `classified: { level }`, on the text, so the server can read it. Readers cleared for it
+  see portion markings: (C), (S), (TS).
+- **The full text is for those cleared for every mark.** A section's full text (room
+  `section:<id>`) goes only to members whose clearance covers the section's classification *and*
+  its highest mark. The server computes that mark from the live document when it's open (the stored
+  `max_mark_level` lags saves), and stores it on each save, auditing any change.
+- **Everyone else reads a projection.** Room `projection:<id>:<level>` holds a copy the server
+  writes itself (`src/realtime/projection.ts`): the same paragraphs, each run of words marked above
+  `level` replaced by a bar of black blocks rounded up to a multiple of six characters, and
+  adjacent bars merged. It is rebuilt 100 ms after the full text changes. Readers can't write to it,
+  and nothing hidden is ever copied into it. The REST briefing tells each reader which room to use
+  (`view: full | projection | none`).
 
-Rejected along the way: letting lower-cleared readers edit their projection and mapping those
-edits back into the master. That is two-way synchronization between different documents, the
-problem CRDTs exist to avoid, and it would be the most fragile part of the system.
+**Enforced before each update is applied.** A pre-update hook decodes every incoming update to a
+full text, applies it to a scratch copy, and computes the highest mark after it:
+
+- **Above the sender's own clearance:** the update is refused and the sender's connection closed.
+  Nobody can hide words they couldn't then read.
+- **Above another connected member's clearance:** that member is told and disconnected *before*
+  the update is applied, so neither it nor anything typed into the newly classified words reaches
+  them. Every page re-fetches the briefing and moves to the projection it now needs.
+
+The trade-off, stated plainly: a member who can't see every word of a section can't edit that
+section. They can still edit the sections that are fully within their clearance. This matches how
+classified documents are handled on paper: portion markings on the original, sanitized copies for
+lower levels.
+
+Rejected along the way: letting lower-cleared readers edit their projection and mapping those edits
+back into the full text. That is two-way synchronization between different documents, the problem
+CRDTs exist to avoid, and it would be the most fragile part of the system.
 
 ## 2. Concurrent editing
 
@@ -184,6 +201,9 @@ Remaining limits:
 | Guarantee | Enforced by | Proven by |
 |---|---|---|
 | Text above your clearance never reaches your browser | One collaborative document per section; redacted REST responses | Browser test scanning all HTTP and WebSocket traffic |
+| Words marked above your clearance never reach you | Full text only for those cleared for every mark; server-written projections | Property test over 500 random documents; realtime tests on the raw document bytes; the browser traffic scan |
+| Nobody marks above their own clearance | Pre-update check; the connection is closed | Realtime test (fails with the check removed) |
+| Classifying words takes effect before the next keystroke | Uncleared members disconnected before the update is applied | Realtime test with the background re-check disabled (fails without the pre-update disconnect) |
 | Readers can't change text | Read-only connections, enforced on the server | Realtime test: a reader's edits reach no one |
 | Lost access takes effect on open connections | `NOTIFY` on commit, re-check, disconnect | Realtime tests for demotion, clearance and revoked shares |
 | No edit lands after a permission change commits (single instance) | Lock before commit | Realtime test (failed before the fix) |
