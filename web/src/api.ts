@@ -25,6 +25,9 @@ export interface Section {
   position: number;
   classification: number;
   access: Access;
+  /** full text, the server's projection (some words above the reader's clearance), or redacted */
+  view: 'full' | 'projection' | 'none';
+  projectionLevel?: number;
   heading?: string;
   redactedLength?: number;
 }
@@ -43,6 +46,7 @@ export interface Explanation {
   reasons: { source: 'role' | 'share'; access: Access; because: string }[];
   clearance: string;
   redactedSections: { id: string; classification: string }[];
+  partlyRedactedSections: { id: string; markedUpTo: string }[];
 }
 
 export const collabUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/collab`;

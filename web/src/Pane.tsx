@@ -27,7 +27,7 @@ export function Pane({ session, characterKey }: { session: Session; characterKey
     } catch (e) {
       if (!(e instanceof ApiError && (e.status === 403 || e.status === 404))) return;
     }
-    const shape = (b: Briefing | null) => (b ? `${b.access}:${b.sections.map((s) => s.access).join()}` : 'denied');
+    const shape = (b: Briefing | null) => (b ? `${b.access}:${b.sections.map((s) => `${s.view}${s.access}`).join()}` : 'denied');
     setBriefing((previous) => {
       if (previous !== undefined && shape(previous) !== shape(next) && (previous || next)) {
         setFlash(true);
@@ -85,7 +85,12 @@ export function Pane({ session, characterKey }: { session: Session; characterKey
                 {why.reasons.length === 0 ? <p>No role or share gives you access.</p> : (
                   <ul>{why.reasons.map((r) => <li key={r.because}><strong>{r.access === 'edit' ? 'Edit' : 'Read'}</strong>: {r.because}</li>)}</ul>
                 )}
-                <p>Clearance <strong>{why.clearance.replace('_', ' ')}</strong>{why.redactedSections.length ? `: ${why.redactedSections.length} section(s) above it are redacted.` : ': nothing is redacted.'}</p>
+                <p>
+                  Clearance <strong>{why.clearance.replace('_', ' ')}</strong>
+                  {why.redactedSections.length || why.partlyRedactedSections.length
+                    ? `: ${why.redactedSections.length} section(s) redacted, ${why.partlyRedactedSections.length} with words redacted.`
+                    : ': nothing is redacted.'}
+                </p>
               </aside>
             )}
             {briefing.sections.map((s) => (
@@ -105,9 +110,13 @@ export function Pane({ session, characterKey }: { session: Session; characterKey
                         would register the same room twice on the shared socket. */}
                     <SectionBoundary>
                       <SectionEditor
-                        key={s.id}
+                        key={`${s.id}-${s.view}`}
                         sectionId={s.id}
+                        view={s.view === 'projection' ? 'projection' : 'full'}
+                        projectionLevel={s.projectionLevel}
                         access={s.access}
+                        clearance={briefing.clearance}
+                        clearances={session.clearances}
                         socket={socket}
                         token={me.accessToken}
                         user={{ name: me.name, color: COLORS[me.key] ?? '#555' }}

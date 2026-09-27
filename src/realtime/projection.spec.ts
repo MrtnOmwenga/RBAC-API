@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import * as Y from 'yjs';
-import { barLength, FRAGMENT, maxMarkLevel, project, projectDelta } from './projection';
+import { barLength, FRAGMENT, markLevel, maxMarkLevel, project, projectDelta } from './projection';
 
 /** A section of paragraphs, each a list of [text, level] runs (level 0 = unmarked). */
 function section(paragraphs: [string, number][][]): Y.Doc {
@@ -65,3 +65,38 @@ test('no projection ever contains a character of a run above its level', () => {
   }), { numRuns: 500 });
 });
 
+
+test('the fragment is the one the TipTap editor writes to', () => {
+  expect(FRAGMENT).toBe('default');
+});
+
+test('only positive whole-number levels count as marks', () => {
+  expect(markLevel(undefined)).toBe(0);
+  expect(markLevel({ bold: true })).toBe(0);
+  expect(markLevel({ classified: {} })).toBe(0);
+  expect(markLevel({ classified: { level: 2 } })).toBe(2);
+  expect(markLevel({ classified: { level: '3' } })).toBe(3);
+  for (const bad of ['x', -1, 0, 1.5, null]) expect(markLevel({ classified: { level: bad } })).toBe(0);
+});
+
+test('element attributes (heading levels, …) are copied; non-text nodes are skipped', () => {
+  const doc = new Y.Doc();
+  doc.transact(() => {
+    const heading = new Y.XmlElement('heading');
+    heading.setAttribute('level', '2');
+    const text = new Y.XmlText();
+    heading.insert(0, [text, new Y.XmlHook('inline-embed') as unknown as Y.XmlText]);
+    // Yjs's types leave hooks out, but documents can hold them.
+    doc.getXmlFragment(FRAGMENT).insert(0, [heading, new Y.XmlHook('embed') as unknown as Y.XmlElement]);
+    text.insert(0, 'Plan B', { classified: { level: 1 } });
+  });
+  expect(maxMarkLevel(doc.getXmlFragment(FRAGMENT))).toBe(1);
+  const out = new Y.Doc();
+  out.transact(() => project(doc.getXmlFragment(FRAGMENT), out.getXmlFragment(FRAGMENT), 0));
+  const [copied, ...rest] = out.getXmlFragment(FRAGMENT).toArray();
+  expect(rest).toEqual([]);
+  expect((copied as Y.XmlElement).nodeName).toBe('heading');
+  expect((copied as Y.XmlElement).getAttribute('level')).toBe('2');
+  expect((copied as Y.XmlElement).toArray()).toHaveLength(1); // the nested hook is skipped too
+  expect(((copied as Y.XmlElement).toArray()[0] as Y.XmlText).toString()).toContain('██████');
+});
