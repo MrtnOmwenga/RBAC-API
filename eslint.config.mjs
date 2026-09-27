@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage', 'reports', '.stryker-tmp', 'jest.config.js', 'eslint.config.mjs', 'load'] },
+  { ignores: ['dist', 'coverage', 'reports', '.stryker-tmp', 'jest.config.js', 'eslint.config.mjs', 'load', 'web', 'test/browser/server.cjs', 'playwright.config.ts', 'test-results', 'playwright-report'] },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
