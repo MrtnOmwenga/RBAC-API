@@ -173,6 +173,76 @@ const initial: Migration = {
   },
 };
 
+/*
+ * Sharing, clearance and sectioned documents (the "Redacted" demo):
+ * - members get a clearance level; each document section has a classification;
+ * - document_grants share one document with a member or a whole department, possibly temporarily;
+ * - document_sections hold each section's collaborative state (a Yjs update) and its text length,
+ *   which is what a redaction bar is sized from (bucketed when served).
+ * Demo organizations are marked, and a SECURITY DEFINER function deletes expired ones: the API
+ * role can't delete organizations otherwise.
+ */
+const sharing: Migration = {
+  async up(db: Kysely<unknown>) {
+    await sql`
+      alter table organizations add column is_demo boolean not null default false;
+      alter table users add column clearance smallint not null default 0 check (clearance between 0 and 3);
+      alter table documents add constraint documents_org_id_id unique (org_id, id);
+
+      create table document_grants (
+        id uuid primary key default gen_random_uuid(),
+        org_id uuid not null,
+        document_id uuid not null,
+        subject_type text not null check (subject_type in ('user', 'department')),
+        subject_id uuid not null,
+        relation text not null check (relation in ('reader', 'editor')),
+        granted_by uuid not null,
+        expires_at timestamptz,
+        created_at timestamptz not null default now(),
+        unique (document_id, subject_type, subject_id),
+        foreign key (org_id, document_id) references documents (org_id, id) on delete cascade,
+        foreign key (org_id, granted_by) references users (org_id, id)
+      );
+      create index document_grants_subject on document_grants (subject_type, subject_id);
+
+      create table document_sections (
+        id uuid primary key default gen_random_uuid(),
+        org_id uuid not null,
+        document_id uuid not null,
+        position integer not null,
+        heading text not null check (length(heading) between 1 and 200),
+        classification smallint not null default 0 check (classification between 0 and 3),
+        state bytea not null default ''::bytea,
+        text_length integer not null default 0,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        foreign key (org_id, document_id) references documents (org_id, id) on delete cascade
+      );
+      create index document_sections_document on document_sections (document_id, position);
+    `.execute(db);
+    for (const table of ['document_grants', 'document_sections']) {
+      await sql`
+        alter table ${sql.table(table)} enable row level security;
+        alter table ${sql.table(table)} force row level security;
+        create policy tenant_isolation on ${sql.table(table)}
+          using (org_id = nullif(current_setting('app.org_id', true), '')::uuid)
+          with check (org_id = nullif(current_setting('app.org_id', true), '')::uuid);
+      `.execute(db);
+    }
+    await sql`
+      grant select, insert, update, delete on document_grants, document_sections to rbac_app;
+
+      create function demo_cleanup(p_older_than interval)
+        returns integer language sql volatile security definer set search_path = public
+        as $$ with gone as (delete from organizations where is_demo and created_at < now() - p_older_than returning 1)
+              select count(*)::integer from gone $$;
+      revoke all on function demo_cleanup(interval) from public;
+      grant execute on function demo_cleanup(interval) to rbac_app;
+    `.execute(db);
+  },
+};
+
 export const migrations: Record<string, Migration> = {
   '001_initial': initial,
+  '002_sharing_and_sections': sharing,
 };

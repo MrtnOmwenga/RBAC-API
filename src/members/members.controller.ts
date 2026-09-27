@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodPipe } from '../common/http';
-import { ROLES } from '../policy/policy';
+import { ROLES, TOP_CLEARANCE } from '../policy/policy';
 import { MembersService } from './members.service';
 
 const createBody = z.strictObject({
@@ -11,8 +11,11 @@ const createBody = z.strictObject({
   role: z.enum(ROLES),
   departmentId: z.uuid().nullable().default(null),
 });
-const updateBody = z.strictObject({ role: z.enum(ROLES).optional(), departmentId: z.uuid().nullable().optional() })
-  .refine((b) => b.role !== undefined || b.departmentId !== undefined, 'Change the role, the department or both');
+const updateBody = z.strictObject({
+  role: z.enum(ROLES).optional(),
+  departmentId: z.uuid().nullable().optional(),
+  clearance: z.number().int().min(0).max(TOP_CLEARANCE).optional(),
+}).refine((b) => b.role !== undefined || b.departmentId !== undefined || b.clearance !== undefined, 'Change the role, department or clearance');
 
 @Controller('members')
 export class MembersController {

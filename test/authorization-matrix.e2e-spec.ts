@@ -169,6 +169,8 @@ const SCENARIOS: Scenario[] = [
   ...documentScenarios('document:read', 200, (http, id, a) => as(http().get(`/documents/${id}`), a)),
   ...documentScenarios('document:update', 200, (http, id, a) => as(http().patch(`/documents/${id}`), a).send({ title: 'Edited' })),
   ...documentScenarios('document:delete', 204, (http, id, a) => as(http().delete(`/documents/${id}`), a)),
+  ...documentScenarios('document:share', 201, (http, id, a) => as(http().post(`/documents/${id}/shares`), a)
+    .send({ subjectType: 'user', subjectId: w.users.viewerX.principal.id, relation: 'reader' })),
 
   {
     action: 'api_key:create',
@@ -246,8 +248,19 @@ describe.each(ACTORS)('%s', (name) => {
     expect(body).not.toContain(w.orgB);
     expect(body).not.toContain(w.documentB);
     if (filter.departmentId && list.departmentOf) {
-      const departments = new Set((res.body as Record<string, unknown>[]).map(list.departmentOf));
-      expect([...departments]).toEqual(departments.size ? [filter.departmentId] : []);
+      // Documents shared with the member (or their department) are listed too, wherever they are.
+      const shared = new Set<unknown>();
+      if (list.action === 'document:read' && who.principal.kind === 'user') {
+        const { id, departmentId } = who.principal;
+        const grants = await t.owner.selectFrom('document_grants').select('document_id')
+          .where((eb) => eb.or([
+            eb.and([eb('subject_type', '=', 'user'), eb('subject_id', '=', id)]),
+            eb.and([eb('subject_type', '=', 'department'), eb('subject_id', '=', departmentId ?? id)]),
+          ])).execute();
+        for (const g of grants) shared.add(g.document_id);
+      }
+      const outside = (res.body as Record<string, unknown>[]).filter((row) => list.departmentOf!(row) !== filter.departmentId && !shared.has(row.id));
+      expect(outside).toEqual([]);
     }
   });
 });

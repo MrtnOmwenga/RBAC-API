@@ -33,15 +33,17 @@ export async function createDepartment(owner: Kysely<Database>, orgId: string, n
   return row.id;
 }
 
-export async function createUser(owner: Kysely<Database>, orgId: string, role: Role, departmentId: string | null, name: string = role): Promise<Actor> {
+export async function createUser(
+  owner: Kysely<Database>, orgId: string, role: Role, departmentId: string | null, name: string = role, clearance = 0,
+): Promise<Actor> {
   const email = `${name}-${randomUUID().slice(0, 8)}@example.test`;
   const row = await owner.insertInto('users').values({
-    org_id: orgId, email, name, password_hash: await hashed(), role, department_id: departmentId,
+    org_id: orgId, email, name, password_hash: await hashed(), role, department_id: departmentId, clearance,
   }).returning('id').executeTakeFirstOrThrow();
   return {
     name,
     email,
-    principal: { kind: 'user', id: row.id, orgId, role, departmentId },
+    principal: { kind: 'user', id: row.id, orgId, role, departmentId, clearance },
     headers: { authorization: `Bearer ${signAccessToken(TEST_JWT_SECRET, 900, { userId: row.id, orgId })}` },
   };
 }
