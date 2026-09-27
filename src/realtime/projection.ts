@@ -20,6 +20,8 @@ interface DeltaOp { insert: unknown; attributes?: Attributes }
 export function markLevel(attributes: Attributes): number {
   const mark = attributes?.[MARK] as { level?: unknown } | undefined;
   const level = Number(mark?.level ?? 0);
+  // A level of 0 is "unmarked" whichever way it's compared.
+  // Stryker disable next-line EqualityOperator
   return Number.isInteger(level) && level > 0 ? level : 0;
 }
 
@@ -74,6 +76,8 @@ export function project(source: Y.XmlFragment, target: Y.XmlFragment, level: num
     }
     return null;
   };
+  // Deleting nothing is a no-op, so the length check only saves a call.
+  // Stryker disable next-line ConditionalExpression
   if (target.length) target.delete(0, target.length);
   target.insert(0, source.toArray().map(copy).filter((n): n is Node => n !== null));
   // Text can only be filled once it's part of the document.

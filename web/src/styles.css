@@ -117,3 +117,18 @@ a { color: #e9ebef; }
 /* Keep who you are, and the server's notices, in view while the briefing scrolls. */
 .pane-header { position: sticky; top: 0; z-index: 2; background: var(--desk); padding-top: 0.35rem; padding-bottom: 0.35rem; }
 .flash { position: fixed; top: 3.6rem; right: 0.75rem; z-index: 3; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); }
+
+/* ── word-level classification ───────────────────────── */
+/* Portion marking, as on real classified paper: "(C) words", "(S) words", "(TS) words". */
+.classified { border-radius: 2px; padding: 0 0.1em; }
+.classified[data-level="1"] { background: rgba(31, 95, 168, 0.14); }
+.classified[data-level="2"] { background: rgba(192, 90, 18, 0.16); }
+.classified[data-level="3"] { background: rgba(155, 28, 28, 0.16); }
+.classified::before { font-size: 0.62em; font-weight: 700; vertical-align: super; margin-right: 0.15em; }
+.classified[data-level="1"]::before { content: "(C)"; color: var(--blue); }
+.classified[data-level="2"]::before { content: "(S)"; color: var(--orange); }
+.classified[data-level="3"]::before { content: "(TS)"; color: var(--red); }
+.redaction { background: #111; color: #111; border-radius: 2px; letter-spacing: -0.05em; user-select: none; }
+.classify { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; padding: 0.25rem 0; font-family: var(--sans); font-size: 0.72rem; color: #555; }
+.classify button { border: 1px solid #b9b1a0; background: #fff; border-radius: 3px; padding: 0.05rem 0.4rem; font-size: 0.72rem; cursor: pointer; }
+.classify button:disabled { opacity: 0.45; cursor: default; }

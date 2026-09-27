@@ -12,9 +12,9 @@ export function Room({ session }: { session: Session }) {
       <header className="room-bar">
         <h1 className="wordmark small">RE<span className="bar">DACT</span>ED</h1>
         <p className="hint">
-          You are the <strong>Director</strong> (top left). Type as the Analyst, then lower their
-          clearance or make them a viewer mid-sentence · raise the Intern&apos;s clearance · share the
-          briefing with the Liaison · ask any agent &ldquo;Why can I see this?&rdquo;
+          You are the <strong>Director</strong> (top left). Select words in your copy and classify
+          them: watch them black out for the others · lower the Analyst&apos;s clearance while they
+          type · share the briefing with the Liaison · ask any agent &ldquo;Why can I see this?&rdquo;
         </p>
         <button type="button" className="ghost" onClick={restart}>New agency</button>
       </header>
