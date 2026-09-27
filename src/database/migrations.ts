@@ -186,6 +186,9 @@ const sharing: Migration = {
   async up(db: Kysely<unknown>) {
     await sql`
       alter table organizations add column is_demo boolean not null default false;
+      -- Projects reached organizations only through departments, so deleting an organization
+      -- stopped at them. They now go with it (and their documents, sections and shares with them).
+      alter table projects add foreign key (org_id) references organizations (id) on delete cascade;
       alter table users add column clearance smallint not null default 0 check (clearance between 0 and 3);
       alter table documents add constraint documents_org_id_id unique (org_id, id);
 
