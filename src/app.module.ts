@@ -13,6 +13,7 @@ import { AuthService } from './auth/auth.service';
 import { AuthenticationGuard, TenantInterceptor } from './auth/authentication';
 import { BriefingsController } from './briefings/briefings.controller';
 import { BriefingsService } from './briefings/briefings.service';
+import { RealtimeService } from './realtime/realtime.service';
 import { ProblemDetailsFilter } from './common/http';
 import { CONFIG, type Config } from './config/config';
 import { DatabaseModule } from './database/database.module';
@@ -67,7 +68,7 @@ export class AppModule {
         ApiKeysController, AuditController, HealthController, BriefingsController,
       ],
       providers: [
-        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService,
+        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService,
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthenticationGuard },
         { provide: APP_INTERCEPTOR, useClass: TenantInterceptor },

@@ -14,6 +14,8 @@ const shared = {
 };
 
 module.exports = {
+  // A global option: Jest ignores it inside a project.
+  testTimeout: 30000,
   projects: [
     { ...shared, displayName: 'unit', testMatch: ['<rootDir>/src/**/*.spec.ts'] },
     {
@@ -22,7 +24,6 @@ module.exports = {
       testMatch: ['<rootDir>/test/**/*.e2e-spec.ts'],
       globalSetup: '<rootDir>/test/global-setup.ts',
       globalTeardown: '<rootDir>/test/global-teardown.ts',
-      testTimeout: 30000,
     },
   ],
 };
