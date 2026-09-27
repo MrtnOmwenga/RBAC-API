@@ -112,6 +112,16 @@ test('the briefing channel tells readers to refresh when the briefing changes', 
   await eventually(() => expect(intern.stateless).toContainEqual({ type: 'refresh' }));
 });
 
+test('a personal channel reaches members with no access yet, and only its owner may join', async () => {
+  const a = await agency();
+  await expect(join(a.analyst, `member:${a.outsider.principal.id}`).ready).rejects.toThrow();
+  const mine = join(a.outsider, `member:${a.outsider.principal.id}`);
+  await mine.ready;
+  await t.http().post(`/documents/${a.doc}/shares`).set(a.analyst.headers)
+    .send({ subjectType: 'user', subjectId: a.outsider.principal.id, relation: 'reader' }).expect(201);
+  await eventually(() => expect(mine.stateless).toContainEqual({ type: 'refresh' }));
+});
+
 test('bad tokens and unknown rooms are refused', async () => {
   const a = await agency();
   const forged = { ...a.analyst, headers: { authorization: 'Bearer not-a-token' } };
