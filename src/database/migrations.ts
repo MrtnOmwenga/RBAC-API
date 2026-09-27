@@ -245,7 +245,22 @@ const sharing: Migration = {
   },
 };
 
+/*
+ * Word-level classification: the highest level marked on any words in a section, kept up to date
+ * when the section is saved. The REST API uses it to decide between the full text and a
+ * projection without loading the live document.
+ */
+const markedWords: Migration = {
+  async up(db: Kysely<unknown>) {
+    await sql`
+      alter table document_sections
+        add column max_mark_level smallint not null default 0 check (max_mark_level between 0 and 3);
+    `.execute(db);
+  },
+};
+
 export const migrations: Record<string, Migration> = {
   '001_initial': initial,
   '002_sharing_and_sections': sharing,
+  '003_marked_words': markedWords,
 };
