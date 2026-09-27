@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
-    "start:dev": "tsx watch --env-file-if-exists=.env src/main.ts",
+    "start:dev": "nest start --watch --exec \"node --env-file-if-exists=.env\"",
     "migrate": "node dist/database/migrate.js",
     "migrate:dev": "tsx --env-file-if-exists=.env src/database/migrate.ts",
     "lint": "eslint .",
@@ -19,7 +19,10 @@
     "test:e2e": "jest --selectProjects e2e",
     "test:all": "jest",
     "test:mutation": "stryker run",
-    "policy:table": "tsx scripts/policy-table.ts"
+    "policy:table": "tsx scripts/policy-table.ts",
+    "build:web": "npm --prefix web run build",
+    "build:all": "npm run build && npm run build:web",
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "@hocuspocus/server": "^4.7.0",
@@ -44,6 +47,8 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@hocuspocus/provider": "^4.7.0",
+    "@nestjs/cli": "^11.0.24",
+    "@playwright/test": "^1.63.0",
     "@stryker-mutator/core": "^10.0.0",
     "@stryker-mutator/jest-runner": "^10.0.0",
     "@stryker-mutator/typescript-checker": "^10.0.0",

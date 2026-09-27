@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { type DynamicModule, type INestApplication, Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import express from 'express';
 import helmet from 'helmet';
 import { Logger, LoggerModule } from 'nestjs-pino';
 import { ApiKeysController } from './api-keys/api-keys.controller';
@@ -86,6 +89,9 @@ export function configureApp(app: INestApplication): void {
   app.use(helmet());
   const http = app.getHttpAdapter().getInstance() as { set(key: string, value: unknown): void };
   http.set('trust proxy', 1);
+  // The demo UI shares the API's origin, so its WebSocket and requests need no CORS.
+  const web = resolve(app.get<Config>(CONFIG).WEB_DIR);
+  if (existsSync(resolve(web, 'index.html'))) app.use(express.static(web, { index: 'index.html', maxAge: '1h' }));
   app.enableShutdownHooks();
 }
 
