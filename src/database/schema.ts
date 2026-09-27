@@ -116,6 +116,7 @@ export interface DocumentSectionsTable {
   position: number;
   heading: string;
   classification: Generated<number>;
+  max_mark_level: Generated<number>;
   state: Generated<Buffer>;
   text_length: Generated<number>;
   created_at: CreatedAt;
