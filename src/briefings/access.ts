@@ -1,5 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
-import { sql, type Transaction } from 'kysely';
+import type { Transaction } from 'kysely';
 import type { Database } from '../database/schema';
 import { type Access, documentAccess, type Grant, type Principal } from '../policy/policy';
 
@@ -24,14 +24,6 @@ export async function loadDocumentAccess(trx: Transaction<Database>, principal: 
   const resource = { orgId: document.org_id, departmentId: document.department_id, ownerId: document.author_id };
   const access: Access = documentAccess(principal, resource, grants);
   return { document, grants, resource, access };
-}
-
-/**
- * Tells every realtime server (this one included, across instances) that permissions in an
- * organization changed. Sent inside the caller's transaction, so it's delivered only on commit.
- */
-export async function announceAccessChange(trx: Transaction<Database>, orgId: string): Promise<void> {
-  await sql`select pg_notify(${ACCESS_CHANNEL}, ${orgId})`.execute(trx);
 }
 
 /** Redaction bars are sized from text length, rounded up so they don't give away exact lengths. */

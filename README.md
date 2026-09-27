@@ -151,6 +151,12 @@ any permission change ──► pg_notify('rbac_access_changed', org) on commit
 
 - A section is its own Yjs document, so the server can simply never sync a section to someone who
   isn't cleared for it. One shared document with hidden parts would still ship the hidden text.
+- Permission changes fail closed: live connections lock *before* the change commits, the re-check
+  restores whoever may still edit, and a recovery sync means nothing they typed meanwhile is lost.
+
+**[docs/COLLABORATION.md](docs/COLLABORATION.md)** explains the whole design: why redaction has to
+be structural, options for word-level redaction, how concurrent edits merge (and what a CRDT
+doesn't solve), and the permission-change race and how it's closed.
 - The access token goes in the first WebSocket message rather than a cookie, so there is no
   ambient credential for another site to use.
 
@@ -164,13 +170,13 @@ npm run test:mutation    # Stryker on the policy, tokens, audit chain and canoni
 k6 run load/smoke.js     # against a running stack
 ```
 
-585 tests in all: 69 unit, 511 end-to-end (441 of them the authorization matrix) and 5 in the
+587 tests in all: 69 unit, 513 end-to-end (441 of them the authorization matrix) and 5 in the
 browser.
 
 | Suite | What it proves |
 |---|---|
 | **Authorization matrix** (441 cases) | Eight principals (five roles, three kinds of API key) × every action × own department, other department, other organization. Expected results come from the policy, so every endpoint is shown to enforce exactly the table above. Removing a single permission check (the one on document updates) fails 13 cases. |
-| **Realtime** | Real WebSocket clients: cleared editors sync and are saved and audited; an uncleared member is refused and receives nothing; a reader's edits reach no one; demotion mid-session turns the connection read-only; lowered clearance or a revoked share disconnects; personal channels reach members with no access yet. |
+| **Realtime** | Real WebSocket clients: cleared editors sync and are saved and audited; an uncleared member is refused and receives nothing; a reader's edits reach no one; demotion mid-session turns the connection read-only; lowered clearance or a revoked share disconnects; personal channels reach members with no access yet; no edit lands once a demotion has committed; edits refused during a re-check are recovered. |
 | **Sharing and sections** | Redacted sections carry no heading or text; department and user shares, temporary shares expiring, cross-organization shares refused; classification bounded by clearance; "why can I see this?"; every change audited. |
 | **Browser** (Playwright) | Everything the Intern's page receives, HTTP and every WebSocket frame, is scanned for the hidden text; the four-pane room; demotion mid-typing; live redaction; sharing; the surveillance log. |
 | **Tokens** | `alg: none`, wrong secret, edited payload, expired, wrong audience or issuer, wrong token type, tokens for unknown users or the wrong organization, keys sent as tokens and tokens as keys, revoked and expired keys: all 401. |
