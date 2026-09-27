@@ -5,7 +5,8 @@ import { TenantContext } from '../database/tenant';
 import {
   type Access, can, canClassify, CLEARANCES, type Clearance, documentAccess, POLICY, sectionAccess,
 } from '../policy/policy';
-import { announceAccessChange, loadDocumentAccess, redactedLength } from './access';
+import { loadDocumentAccess, redactedLength } from './access';
+import { AccessChanges } from '../realtime/access-changes';
 
 export interface NewShare {
   subjectType: 'user' | 'department';
@@ -16,7 +17,11 @@ export interface NewShare {
 
 @Injectable()
 export class BriefingsService {
-  constructor(private readonly tenant: TenantContext, private readonly audit: AuditService) {}
+  constructor(
+    private readonly tenant: TenantContext,
+    private readonly audit: AuditService,
+    private readonly access: AccessChanges,
+  ) {}
 
   /**
    * The document as this principal may see it: every section is listed (so the page keeps its
@@ -57,7 +62,7 @@ export class BriefingsService {
     await this.audit.record(db, principal.orgId, actorOf(principal), {
       action: 'section.create', resourceType: 'document', resourceId: documentId, detail: { section: section.id, classification: CLEARANCES[input.classification] },
     });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
     return section;
   }
 
@@ -73,7 +78,7 @@ export class BriefingsService {
       action: 'section.update', resourceType: 'document', resourceId: section.document_id,
       detail: { section: sectionId, ...(changes.classification !== undefined ? { from: CLEARANCES[section.classification], to: CLEARANCES[to] } : {}) },
     });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
   }
 
   async removeSection(sectionId: string) {
@@ -84,7 +89,7 @@ export class BriefingsService {
     if (!canClassify(principal, access, section.classification, section.classification)) throw new ForbiddenException('Not allowed to remove this section');
     await db.deleteFrom('document_sections').where('id', '=', sectionId).execute();
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'section.delete', resourceType: 'document', resourceId: section.document_id, detail: { section: sectionId } });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
   }
 
   async shares(documentId: string) {
@@ -111,7 +116,7 @@ export class BriefingsService {
       action: 'document.share', resourceType: 'document', resourceId: documentId,
       detail: { subject: `${input.subjectType}:${input.subjectId}`, relation: input.relation, expiresAt },
     });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
     return { id: grant.id, ...input, expiresAt };
   }
 
@@ -122,7 +127,7 @@ export class BriefingsService {
     const removed = await db.deleteFrom('document_grants').where('id', '=', grantId).where('document_id', '=', documentId).executeTakeFirst();
     if (Number(removed.numDeletedRows) === 0) throw new NotFoundException('No such share');
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'document.unshare', resourceType: 'document', resourceId: documentId, detail: { grant: grantId } });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
   }
 
   /**

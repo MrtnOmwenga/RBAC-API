@@ -6,7 +6,7 @@ import { authorize } from '../common/http';
 import { findDepartment, findMember } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
 import { canAssignRole, canManageMember, canSetClearance, CLEARANCES, hasDepartment, listFilter, type Role } from '../policy/policy';
-import { announceAccessChange } from '../briefings/access';
+import { AccessChanges } from '../realtime/access-changes';
 
 type MemberRow = Awaited<ReturnType<typeof findMember>>;
 
@@ -25,7 +25,11 @@ export interface NewMember {
 
 @Injectable()
 export class MembersService {
-  constructor(private readonly tenant: TenantContext, private readonly audit: AuditService, private readonly auth: AuthService) {}
+  constructor(
+    private readonly tenant: TenantContext,
+    private readonly audit: AuditService, private readonly auth: AuthService,
+    private readonly access: AccessChanges,
+  ) {}
 
   async create(input: NewMember) {
     const { db, principal } = this.tenant;
@@ -89,7 +93,7 @@ export class MembersService {
         to: { role, departmentId, clearance: CLEARANCES[clearance] },
       },
     });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
     return view(updated);
   }
 
@@ -104,6 +108,6 @@ export class MembersService {
     await db.updateTable('users').set({ disabled_at: new Date() }).where('id', '=', id).execute();
     await this.auth.revokeAllFor(db, id);
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'member.disable', resourceType: 'user', resourceId: id });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
   }
 }
