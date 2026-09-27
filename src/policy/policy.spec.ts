@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import {
   ACTIONS, type Action, can, canAssignRole, canManageMember, DEPARTMENT_ROLES, hasDepartment, INTEGRATION_ACTIONS,
-  listFilter, POLICY, type Principal, documentAccess, sectionAccess, canClassify, canSetClearance, type Grant, type Access, CLEARANCES, reachOf, type Resource, type Role, ROLES, TOP_CLEARANCE,
+  listFilter, POLICY, type Principal, documentAccess, sectionAccess, canClassify, canSetClearance, type Grant, type Access, CLEARANCES, sectionView, canMark, reachOf, type Resource, type Role, ROLES, TOP_CLEARANCE,
 } from './policy';
 
 /*
@@ -274,5 +274,44 @@ describe('sharing, clearance and sections', () => {
     expect(canSetClearance(admin, { id: 'b' }, 0)).toBe(true);
     expect(canSetClearance(admin, { id: 'b' }, 3)).toBe(false);
     expect(canSetClearance({ ...admin, role: 'department_admin', departmentId: 'd' }, { id: 'b' }, 0)).toBe(false);
+  });
+});
+
+describe('word-level classification', () => {
+  const level = fc.integer({ min: 0, max: TOP_CLEARANCE });
+  const docLevel = fc.constantFrom<Access>('none', 'read', 'edit');
+
+  test('the full text goes only to those cleared for every mark; projections are at exactly the reader\'s clearance', () => {
+    fc.assert(fc.property(principal, docLevel, level, level, (p, doc, classification, marked) => {
+      const view = sectionView(p, doc, classification, marked);
+      const clearance = p.kind === 'user' ? p.clearance : 0;
+      if (view.mode === 'full') {
+        expect(clearance).toBeGreaterThanOrEqual(Math.max(classification, marked));
+        expect(view.access).toBe(doc);
+      }
+      if (view.mode === 'projection') {
+        expect(view.level).toBe(clearance);
+        expect(clearance).toBeLessThan(marked);
+        expect(clearance).toBeGreaterThanOrEqual(classification);
+      }
+      if (view.mode === 'none') expect(doc === 'none' || clearance < classification).toBe(true);
+      // Whenever sectionAccess grants the section, sectionView agrees there is something to show.
+      expect(view.mode === 'none').toBe(sectionAccess(p, doc, classification) === 'none');
+    }), RUNS);
+  });
+
+  test('examples', () => {
+    const analyst: Principal = { kind: 'user', id: 'a', orgId: 'o', role: 'editor', departmentId: 'd', clearance: 2 };
+    expect(sectionView(analyst, 'edit', 0, 2)).toEqual({ mode: 'full', access: 'edit' });
+    expect(sectionView(analyst, 'edit', 0, 3)).toEqual({ mode: 'projection', level: 2 });
+    expect(sectionView(analyst, 'read', 3, 3)).toEqual({ mode: 'none' });
+    expect(sectionView(analyst, 'none', 0, 0)).toEqual({ mode: 'none' });
+  });
+
+  test('marking words needs edit access and clearance for the level', () => {
+    fc.assert(fc.property(principal, docLevel, level, (p, doc, l) => {
+      const clearance = p.kind === 'user' ? p.clearance : 0;
+      expect(canMark(p, doc, l)).toBe(doc === 'edit' && clearance >= l);
+    }), RUNS);
   });
 });

@@ -3,8 +3,9 @@ import { AuditService, actorOf } from '../audit/audit.service';
 import { findDepartment, findMember } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
 import {
-  type Access, can, canClassify, CLEARANCES, type Clearance, documentAccess, POLICY, sectionAccess,
+  type Access, can, canClassify, CLEARANCES, type Clearance, documentAccess, POLICY, sectionView,
 } from '../policy/policy';
+import { RealtimeService } from '../realtime/realtime.service';
 import { loadDocumentAccess, redactedLength } from './access';
 import { AccessChanges } from '../realtime/access-changes';
 
@@ -21,18 +22,20 @@ export class BriefingsService {
     private readonly tenant: TenantContext,
     private readonly audit: AuditService,
     private readonly access: AccessChanges,
+    private readonly realtime: RealtimeService,
   ) {}
 
   /**
    * The document as this principal may see it: every section is listed (so the page keeps its
    * shape), but a section they aren't cleared for arrives only as a redaction: no heading, no text,
-   * and a rounded length.
+   * and a rounded length. A section they're cleared for but that has words marked above their
+   * clearance is read through a projection (`view: 'projection'`, room `projection:<id>:<level>`).
    */
   async get(documentId: string) {
     const { db, principal } = this.tenant;
     const { document, access } = await loadDocumentAccess(db, principal, documentId);
     if (access === 'none') throw new ForbiddenException('Not allowed to document:read');
-    const sections = await db.selectFrom('document_sections').select(['id', 'position', 'heading', 'classification', 'text_length'])
+    const sections = await db.selectFrom('document_sections').select(['id', 'position', 'heading', 'classification', 'text_length', 'max_mark_level'])
       .where('document_id', '=', documentId).orderBy('position').execute();
     return {
       id: document.id,
@@ -42,10 +45,11 @@ export class BriefingsService {
       canShare: can(principal, 'document:share', { orgId: document.org_id, departmentId: document.department_id, ownerId: document.author_id }),
       clearance: principal.kind === 'user' ? principal.clearance : 0,
       sections: sections.map((s) => {
-        const sectionLevel = sectionAccess(principal, access, s.classification);
-        return sectionLevel === 'none'
-          ? { id: s.id, position: s.position, classification: s.classification, access: sectionLevel, redactedLength: redactedLength(s.text_length) }
-          : { id: s.id, position: s.position, classification: s.classification, access: sectionLevel, heading: s.heading };
+        const view = sectionView(principal, access, s.classification, this.realtime.markedLevel(s.id, s.max_mark_level));
+        const base = { id: s.id, position: s.position, classification: s.classification };
+        if (view.mode === 'none') return { ...base, access: 'none' as const, view: 'none' as const, redactedLength: redactedLength(s.text_length) };
+        if (view.mode === 'projection') return { ...base, access: 'read' as const, view: 'projection' as const, projectionLevel: view.level, heading: s.heading };
+        return { ...base, access: view.access, view: 'full' as const, heading: s.heading };
       }),
     };
   }
@@ -167,7 +171,7 @@ export class BriefingsService {
       }
     }
     const access = documentAccess(subject, resource, grants);
-    const sections = await db.selectFrom('document_sections').select(['id', 'classification']).where('document_id', '=', document.id).orderBy('position').execute();
+    const sections = await db.selectFrom('document_sections').select(['id', 'classification', 'max_mark_level']).where('document_id', '=', document.id).orderBy('position').execute();
     const clearance = subject.kind === 'user' ? subject.clearance : 0;
     return {
       userId: subject.id,
@@ -175,6 +179,9 @@ export class BriefingsService {
       reasons,
       clearance: CLEARANCES[clearance],
       redactedSections: sections.filter((s) => s.classification > clearance).map((s) => ({ id: s.id, classification: CLEARANCES[s.classification] })),
+      partlyRedactedSections: sections
+        .filter((s) => s.classification <= clearance && this.realtime.markedLevel(s.id, s.max_mark_level) > clearance)
+        .map((s) => ({ id: s.id, markedUpTo: CLEARANCES[this.realtime.markedLevel(s.id, s.max_mark_level)] })),
     };
   }
 }
