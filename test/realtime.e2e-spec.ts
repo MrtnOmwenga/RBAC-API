@@ -1,3 +1,4 @@
+import { RealtimeService } from '../src/realtime/realtime.service';
 import { createTestApp, type TestApp } from './support/app';
 import { type Client, connect, eventually, plainText, type } from './support/realtime';
 import { createDepartment, createDocument, createOrg, createProject, createUser } from './support/world';
@@ -120,6 +121,39 @@ test('a personal channel reaches members with no access yet, and only its owner 
   await t.http().post(`/documents/${a.doc}/shares`).set(a.analyst.headers)
     .send({ subjectType: 'user', subjectId: a.outsider.principal.id, relation: 'reader' }).expect(201);
   await eventually(() => expect(mine.stateless).toContainEqual({ type: 'refresh' }));
+});
+
+test('no edit lands once a demotion has committed, not even one sent the instant the request returns', async () => {
+  const a = await agency();
+  const analyst = join(a.analyst, `section:${a.open}`);
+  const director = join(a.director, `section:${a.open}`);
+  await Promise.all([analyst.ready, director.ready]);
+  // The Analyst's client doesn't wait to be told: it writes the moment the demotion returns.
+  const demoted = t.http().patch(`/members/${a.analyst.principal.id}`).set(a.director.headers).send({ role: 'viewer' });
+  await demoted.expect(200);
+  type(analyst.doc, 'Sent right after the demotion');
+  await new Promise((r) => { setTimeout(r, 1500); });
+  expect(plainText(director.doc)).not.toContain('Sent right after the demotion');
+  const stored = await t.owner.selectFrom('document_sections').select('text_length').where('id', '=', a.open).executeTakeFirstOrThrow();
+  expect(stored.text_length).toBe(0);
+});
+
+test('edits refused while access is being re-checked are recovered afterwards: nothing is lost', async () => {
+  const a = await agency();
+  const analyst = join(a.analyst, `section:${a.open}`);
+  const director = join(a.director, `section:${a.open}`);
+  await Promise.all([analyst.ready, director.ready]);
+  const realtime = t.app.get(RealtimeService);
+
+  // Hold the organization in the fail-closed state a permission change starts with...
+  realtime.lock(a.orgId);
+  type(director.doc, 'Typed during the lock');
+  await new Promise((r) => { setTimeout(r, 500); });
+  expect(plainText(analyst.doc)).not.toContain('Typed during the lock'); // refused for now
+
+  // ...then run the re-check: the Director may still edit, so their refused edit is recovered.
+  await realtime.refresh(a.orgId);
+  await eventually(() => expect(plainText(analyst.doc)).toContain('Typed during the lock'));
 });
 
 test('bad tokens and unknown rooms are refused', async () => {

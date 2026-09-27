@@ -4,7 +4,8 @@ import { authorize } from '../common/http';
 import { findDocument, findProject } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
 import { listFilter } from '../policy/policy';
-import { announceAccessChange, loadDocumentAccess } from '../briefings/access';
+import { loadDocumentAccess } from '../briefings/access';
+import { AccessChanges } from '../realtime/access-changes';
 
 type DocumentRow = Awaited<ReturnType<typeof findDocument>>;
 
@@ -17,7 +18,11 @@ const resourceOf = (d: DocumentRow) => ({ orgId: d.org_id, departmentId: d.depar
 
 @Injectable()
 export class DocumentsService {
-  constructor(private readonly tenant: TenantContext, private readonly audit: AuditService) {}
+  constructor(
+    private readonly tenant: TenantContext,
+    private readonly audit: AuditService,
+    private readonly access: AccessChanges,
+  ) {}
 
   async create(projectId: string, input: { title: string; body: string }) {
     const { db, principal } = this.tenant;
@@ -78,6 +83,6 @@ export class DocumentsService {
     authorize(principal, 'document:delete', resourceOf(document));
     await db.deleteFrom('documents').where('id', '=', id).execute();
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'document.delete', resourceType: 'document', resourceId: id });
-    await announceAccessChange(db, principal.orgId);
+    await this.access.announce(db, principal.orgId);
   }
 }
