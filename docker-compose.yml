@@ -1,0 +1,40 @@
+# Local stack: PostgreSQL, a one-off migration job (as the owner), then the API (as a
+# least-privilege role that row-level security applies to). Secrets come from the environment or
+# a .env file next to this one (see README: Run it).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: rbac
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 20
+
+  migrate:
+    build: .
+    command: ["dist/database/migrate.js"]
+    environment:
+      # Passwords stay out of the URLs: node-postgres reads PGPASSWORD.
+      MIGRATION_DATABASE_URL: postgres://postgres@db:5432/rbac
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: postgres://rbac_app_login@db:5432/rbac
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    build: .
+    ports: ["3000:3000"]
+    environment:
+      DATABASE_URL: postgres://rbac_app_login@db:5432/rbac
+      PGPASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (openssl rand -hex 32)}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }

@@ -1,7 +1,9 @@
 node_modules
 dist
-coverage
 reports
+coverage
 .stryker-tmp
+.git
 .env
-*.log
+test
+load
