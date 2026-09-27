@@ -1,15 +1,25 @@
 {
   "compilerOptions": {
-    "target": "es6",
+    "target": "ES2023",
     "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2023"],
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["node", "jest"],
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
+    "emitDecoratorMetadata": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "types": ["node", "jest"]
   },
-  "include": ["src/**/*", "__tests__/**/*"],
-  "exclude": ["node_modules"]
+  "include": ["src", "test", "scripts"]
 }
