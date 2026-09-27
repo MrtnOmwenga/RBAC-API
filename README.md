@@ -4,13 +4,36 @@
 [![CodeQL](https://github.com/MrtnOmwenga/RBAC-API/actions/workflows/codeql.yml/badge.svg)](https://github.com/MrtnOmwenga/RBAC-API/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A multi-tenant REST API where the access rules are the product: organizations → departments →
-projects → documents, five roles with department scoping, and API keys for integrations that can
-never act as people. Authorization is written once, as data, and enforced twice: in the
-application, and by PostgreSQL row-level security underneath it.
+A multi-tenant API where the access rules are the product: organizations → departments →
+projects → documents, five roles with department scoping, Google Docs-style sharing, clearance
+levels on document sections, and API keys for integrations that can never act as people.
+Authorization is written once, as data, and enforced three times: in the REST API, on every live
+collaboration connection, and by PostgreSQL row-level security underneath both.
 
-NestJS 11 · TypeScript · PostgreSQL 16 (row-level security) · Kysely · zod · Argon2id · pino ·
-Jest + Testcontainers · fast-check · Stryker · k6 · Docker (distroless)
+NestJS 11 · TypeScript · PostgreSQL 16 (row-level security) · Kysely · Yjs + Hocuspocus
+(WebSockets) · zod · Argon2id · pino · Jest + Testcontainers · Playwright · fast-check · Stryker ·
+k6 · Docker (distroless) · React + TipTap (demo UI)
+
+## Redacted: the live demo
+
+![Redacted: four agents see one briefing through their own permissions; the Director lowers the Analyst's clearance mid-sentence and a section blacks out on their screen, then shares the briefing with the Liaison and the NO ACCESS stamp lifts](docs/redacted.gif)
+
+The demo is a briefing room for secret agents, and it exists to make the backend visible: the UI
+is deliberately small, and the product here is the permission model underneath it. Four agents
+open the same mission briefing, each in their own frame with their own token, editor state and
+WebSocket, as if on four laptops. The Director changes their access live.
+
+| On screen | What the backend is doing |
+|---|---|
+| Black bars instead of text | Sections above your clearance are never sent: not by the REST API, not over the WebSocket. A browser test records everything the Intern's page receives and checks the hidden text isn't in it. |
+| Clearance lowered while the Analyst types: the section blacks out | A pg `NOTIFY` on commit; the collaboration server re-checks every open connection in the organization and drops the one that lost access. |
+| Made a viewer mid-sentence: the editor locks | Same re-check: the connection turns read-only, and anything typed afterwards is discarded by the server, not just hidden by the UI. |
+| Shared with the Liaison: the NO ACCESS stamp lifts | A share (person or department, reader or editor, optionally temporary) reaches across departments but never across organizations. |
+| "Why can I see this?" | An endpoint that lists every reason for access (role, shares) and what clearance hides. |
+| Surveillance log, "chain verified" | The hash-chained audit log, with its verification endpoint. |
+
+Run it locally with Docker (below) and open http://localhost:3000. Each visitor gets a private,
+throwaway agency, deleted after two hours.
 
 ## Highlights
 
@@ -34,8 +57,17 @@ Jest + Testcontainers · fast-check · Stryker · k6 · Docker (distroless)
 - **A tamper-evident audit log.** Every change is recorded in the same transaction as the change,
   as a per-organization hash chain. The API's database role can insert and read it but not update
   or delete it; `GET /audit-events/verify` recomputes the chain and names the first broken event.
-- **Tested like it matters.** A generated authorization matrix of 409 requests, token-forgery and
-  privilege-escalation suites, property-based tests of the policy, 100% mutation score on the
+- **Sharing and clearance.** Documents can be shared with a member or a whole department, as
+  reader or editor, optionally for a limited time. Documents are split into sections, each with a
+  classification; a member sees a section only with document access *and* enough clearance.
+  Clearance is set only by organization admins, never for themselves, never above their own.
+- **Live authorization for live editing.** Collaborative editing (Yjs CRDTs over WebSockets)
+  checks the same policy when a connection opens and again whenever permissions change, across
+  server instances via PostgreSQL `LISTEN/NOTIFY`. Read-only connections' updates are dropped on
+  the server.
+- **Tested like it matters.** A generated authorization matrix of 441 requests, token-forgery and
+  privilege-escalation suites, realtime tests with real WebSocket clients, browser tests that
+  inspect what reaches the page, property-based tests of the policy, 100% mutation score on the
   security-critical modules, and a k6 load test with a latency budget in CI.
 
 ## Permissions
@@ -61,15 +93,25 @@ optionally bound to one department, and can only ever be granted the actions mar
 | `document:read` | organization | department | department | department | organization | if scoped |
 | `document:update` | organization | department | own | · | · | if scoped |
 | `document:delete` | organization | department | own | · | · | · |
+| `document:share` | organization | department | own | · | · | · |
 | `api_key:create` | organization | · | · | · | · | · |
 | `api_key:read` | organization | · | · | · | organization | · |
 | `api_key:revoke` | organization | · | · | · | · | · |
 | `audit:read` | organization | · | · | · | organization | · |
 <!-- policy-table:end -->
 
-On top of the table: department admins may only create, change or disable editors and viewers of
-their own department; nobody changes or disables their own account; and a role must match its
-department (department roles need one, organization-wide roles can't have one).
+On top of the table:
+
+- **Members:** department admins may only create, change or disable editors and viewers of their
+  own department; nobody changes or disables their own account; a role must match its department
+  (department roles need one, organization-wide roles can't have one).
+- **Shares** raise a member's access to a document to the share's level (reader → read, editor →
+  edit), never lower it; they apply to people only, never to API keys; expired shares count for
+  nothing.
+- **Sections:** visible with document access and clearance ≥ the section's classification;
+  otherwise served as a redaction (no heading, no text, a length rounded up to 40 characters).
+  Creating or reclassifying a section needs edit access and clearance for both the old and new
+  level, so nobody can hide what they can't see or declassify what they can't read.
 
 ## How a request is handled
 
@@ -92,24 +134,51 @@ request ─► ThrottlerGuard ─► AuthenticationGuard ─► TenantIntercepto
 - Logs are structured (pino), carry a request ID (`x-request-id` is accepted or generated and
   echoed), and redact credentials.
 
+### Live collaboration
+
+```
+browser ──ws /collab──► Hocuspocus (in the API process)
+   rooms: section:<id>    onAuthenticate: verify JWT → load principal in a tenant transaction →
+          briefing:<id>                  section access (document access + clearance) → read-only?
+          member:<id>     onLoad/onStore: section state (Yjs) in PostgreSQL, saves debounced + audited
+
+any permission change ──► pg_notify('rbac_access_changed', org) on commit
+                          └─► every instance re-checks its open connections for that org:
+                              lost access → "access: none" + disconnect
+                              demoted     → connection read-only, client told
+                              personal member:<id> rooms → "refresh"
+```
+
+- A section is its own Yjs document, so the server can simply never sync a section to someone who
+  isn't cleared for it. One shared document with hidden parts would still ship the hidden text.
+- The access token goes in the first WebSocket message rather than a cookie, so there is no
+  ambient credential for another site to use.
+
 ## Testing
 
 ```sh
 npm test                 # unit: policy properties, audit chain, tokens, config (no database)
-npm run test:e2e         # the API against real PostgreSQL (Testcontainers), in parallel
+npm run test:e2e         # the API and the collaboration server against real PostgreSQL (Testcontainers)
+npm run build:all && npm run test:browser   # the demo UI in Chromium (Playwright)
 npm run test:mutation    # Stryker on the policy, tokens, audit chain and canonical JSON
 k6 run load/smoke.js     # against a running stack
 ```
 
+585 tests in all: 69 unit, 511 end-to-end (441 of them the authorization matrix) and 5 in the
+browser.
+
 | Suite | What it proves |
 |---|---|
-| **Authorization matrix** (409 cases) | Eight principals (five roles, three kinds of API key) × every action × own department, other department, other organization. Expected results come from the policy, so every endpoint is shown to enforce exactly the table above. Removing a single `authorize()` call fails 13 cases. |
+| **Authorization matrix** (441 cases) | Eight principals (five roles, three kinds of API key) × every action × own department, other department, other organization. Expected results come from the policy, so every endpoint is shown to enforce exactly the table above. Removing a single permission check (the one on document updates) fails 13 cases. |
+| **Realtime** | Real WebSocket clients: cleared editors sync and are saved and audited; an uncleared member is refused and receives nothing; a reader's edits reach no one; demotion mid-session turns the connection read-only; lowered clearance or a revoked share disconnects; personal channels reach members with no access yet. |
+| **Sharing and sections** | Redacted sections carry no heading or text; department and user shares, temporary shares expiring, cross-organization shares refused; classification bounded by clearance; "why can I see this?"; every change audited. |
+| **Browser** (Playwright) | Everything the Intern's page receives, HTTP and every WebSocket frame, is scanned for the hidden text; the four-pane room; demotion mid-typing; live redaction; sharing; the surveillance log. |
 | **Tokens** | `alg: none`, wrong secret, edited payload, expired, wrong audience or issuer, wrong token type, tokens for unknown users or the wrong organization, keys sent as tokens and tokens as keys, revoked and expired keys: all 401. |
 | **Escalation** | Mass assignment, department admins creating or promoting beyond their power or outside their department, self-promotion, API keys requesting human-only scopes or acting beyond them. |
 | **Tenancy** | As the API's own database role: no rows without a tenant, only one tenant's rows with one, writes into another tenant refused, the audit log immune to UPDATE and DELETE. |
 | **Audit** | The chain verifies; a row edited directly in the database is pinpointed; failed requests leave no events; 20 concurrent writes keep one linear chain. |
 | **Auth flows** | Sign-up, generic login failures, lockout, refresh rotation, reuse detection revoking the family, logout, role changes and disabling applying to live tokens. |
-| **Properties** (fast-check) | Nothing crosses organizations; viewers and auditors never mutate; department roles never leave their department; keys never exceed scopes; list filters agree with `can()`; role assignment never escalates. |
+| **Properties** (fast-check) | Nothing crosses organizations; viewers and auditors never mutate; department roles never leave their department; keys never exceed scopes; list filters agree with `can()`; role assignment never escalates; shares only add access and never reach API keys; a section is redacted exactly when clearance is too low; classification and clearance changes stay within the actor's own clearance. |
 
 **Parallel and isolated.** One PostgreSQL container per run; migrations run once into a template
 database, and each Jest worker clones its own copy in milliseconds. Tests create a fresh
@@ -117,7 +186,7 @@ organization for each case, so nothing needs cleaning up and nothing is shared. 
 suite across two runners.
 
 **Mutation testing.** Stryker mutates the policy engine, token handling, the audit chain and
-canonical JSON, and CI fails below 95%. The current score is 100%. Two mutants are marked as
+canonical JSON, and CI fails below 95%. The current score is 100%. Three mutants are marked as
 equivalent in the code, each with the reason.
 
 **Load.** `load/smoke.js` runs 20 virtual users listing, reading and editing documents for 30
@@ -127,8 +196,9 @@ audit chain: all 20 users here share one organization, the worst case. On a lapt
 reads at 27 ms p95, writes at 49 ms p95, and no errors. Every request includes row-level
 security, a principal lookup and a transaction.
 
-**CI** runs lint and type checks, unit tests, e2e shards, mutation testing, gitleaks, `npm audit`,
-a Trivy scan of the image, the k6 budget, and CodeQL. Dependabot keeps dependencies current.
+**CI** runs lint and type checks, unit tests, e2e shards, browser tests, mutation testing,
+gitleaks, `npm audit`, a Trivy scan of the image, the k6 budget, and CodeQL, plus a weekly flake
+hunt that runs everything ten times. Dependabot keeps dependencies current.
 
 ## Run it
 
@@ -140,8 +210,9 @@ docker compose up --build
 ```
 
 This starts PostgreSQL, runs migrations as the owner, then starts the API on
-http://localhost:3000 as the least-privilege role. The image is distroless, runs as non-root, and
-the container is read-only with every capability dropped.
+http://localhost:3000 as the least-privilege role, with the Redacted demo at the same address. The
+image is distroless, runs as non-root, and the container is read-only with every capability
+dropped.
 
 ```sh
 # Create an organization and its first admin
@@ -170,6 +241,9 @@ For development: `npm install`, `cp .env.example .env`, `npm run migrate:dev` (w
 | `POST /projects` · `GET /projects`, `/projects/:id` · `PATCH`, `DELETE /projects/:id` | projects |
 | `POST /projects/:id/documents` · `GET /documents?projectId=`, `/documents/:id` · `PATCH`, `DELETE /documents/:id` | documents |
 | `POST /api-keys` · `GET /api-keys` · `DELETE /api-keys/:id` | integration keys (the key is shown once) |
+| `GET /documents/:id/briefing` · `POST /documents/:id/sections` · `PATCH`, `DELETE /sections/:id` | sectioned documents, redacted per reader |
+| `GET`, `POST /documents/:id/shares` · `DELETE /documents/:id/shares/:grantId` · `GET /documents/:id/explain` | sharing and "why can I see this?" |
+| `ws /collab` (rooms `section:`, `briefing:`, `member:`) · `POST /demo/sessions` (demo mode) | live editing; the demo |
 | `GET /audit-events` · `GET /audit-events/verify` | audit log and chain check |
 | `GET /health/live` · `GET /health/ready` | probes |
 
@@ -190,6 +264,11 @@ For development: `npm install`, `cp .env.example .env`, `npm run migrate:dev` (w
   the response never says an account is locked.
 - **Audit appends are serialized per organization** with a transaction-scoped advisory lock, which
   keeps the chain linear under concurrency without a global lock.
+- **Redaction bars leak a rounded length.** Keeping the page's shape is what makes redaction
+  legible, so hidden sections report their length rounded up to 40 characters: roughly how much is
+  hidden, never exactly.
+- **The demo's panes are iframes** with separate tokens and sockets, so the demo can't cheat by
+  sharing state between agents in one page, and a browser test can load one agent's pane alone.
 
 ## Layout
 
@@ -197,10 +276,15 @@ For development: `npm install`, `cp .env.example .env`, `npm run migrate:dev` (w
 src/
   policy/        the permission model: pure functions over data (unit + property + mutation tested)
   auth/          sign-up, login, refresh rotation, the authentication guard and tenant interceptor
-  database/      schema types, the migration (RLS, grants, lookup functions), tenant transactions
+  database/      schema types, migrations (RLS, grants, lookup functions), tenant transactions
   audit/         the hash-chained audit log
+  briefings/     sections, sharing, "why can I see this?", the access-change announcements
+  realtime/      the collaboration server and its live re-authorization
+  demo/          the throwaway demo agencies
   departments/ members/ projects/ documents/ api-keys/ health/
-test/            e2e suites and helpers (Testcontainers, per-worker databases, seeded worlds)
+web/             the Redacted demo UI (React, TipTap, Vite)
+test/            e2e suites and helpers (Testcontainers, per-worker databases, WebSocket clients);
+  browser/       Playwright tests of the demo UI
 load/            k6 scenario
 scripts/         README permission table generator
 ```

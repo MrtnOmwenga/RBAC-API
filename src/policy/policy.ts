@@ -153,6 +153,8 @@ export function canManageMember(actor: Principal, target: { id: string; role: Ro
 
 export type Access = 'none' | 'read' | 'edit';
 const RANK: Record<Access, number> = { none: 0, read: 1, edit: 2 };
+// Equal ranks mean equal access, so `>=` and `>` return the same thing.
+// Stryker disable next-line EqualityOperator
 const higher = (a: Access, b: Access): Access => (RANK[a] >= RANK[b] ? a : b);
 
 /** A share of one document with one member or a whole department, optionally temporary. */
