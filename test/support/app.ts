@@ -22,6 +22,8 @@ export interface TestApp {
   /** The API's own least-privilege role, for testing what the database itself allows it. */
   appDb: Kysely<Database>;
   config: Config;
+  /** Base URL of the listening server (the realtime tests connect to it over WebSockets). */
+  url: string;
   close: () => Promise<void>;
 }
 
@@ -33,7 +35,7 @@ export async function createTestApp(overrides: Partial<Record<keyof Config, stri
   });
   const app = await NestFactory.create(AppModule.forRoot(config), { logger: false });
   configureApp(app);
-  await app.init();
+  await app.listen(0, '127.0.0.1');
   const owner = new Kysely<Database>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: ownerUrl, max: 3 }) }) });
   const appDb = new Kysely<Database>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: appUrl, max: 2 }) }) });
   return {
@@ -42,6 +44,7 @@ export async function createTestApp(overrides: Partial<Record<keyof Config, stri
     owner,
     appDb,
     config,
+    url: await app.getUrl(),
     close: async () => {
       await app.close();
       await owner.destroy();

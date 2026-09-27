@@ -88,12 +88,14 @@ export class TenantInterceptor implements NestInterceptor {
   }
 }
 
-async function loadPrincipal(trx: Transaction<Database>, credential: Credential): Promise<Principal | null> {
+export async function loadPrincipal(trx: Transaction<Database>, credential: Credential): Promise<Principal | null> {
   if (credential.kind === 'user') {
     // Row-level security already limits this to the token's organization.
-    const user = await trx.selectFrom('users').select(['id', 'org_id', 'role', 'department_id'])
+    const user = await trx.selectFrom('users').select(['id', 'org_id', 'role', 'department_id', 'clearance'])
       .where('id', '=', credential.id).where('disabled_at', 'is', null).executeTakeFirst();
-    return user ? { kind: 'user', id: user.id, orgId: user.org_id, role: user.role, departmentId: user.department_id } : null;
+    return user ? {
+      kind: 'user', id: user.id, orgId: user.org_id, role: user.role, departmentId: user.department_id, clearance: user.clearance,
+    } : null;
   }
   const key = await trx.updateTable('api_keys').set({ last_used_at: new Date() })
     .where('id', '=', credential.id).where('revoked_at', 'is', null)

@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import {
   ACTIONS, type Action, can, canAssignRole, canManageMember, DEPARTMENT_ROLES, hasDepartment, INTEGRATION_ACTIONS,
-  listFilter, POLICY, type Principal, reachOf, type Resource, type Role, ROLES,
+  listFilter, POLICY, type Principal, documentAccess, sectionAccess, canClassify, canSetClearance, type Grant, type Access, CLEARANCES, reachOf, type Resource, type Role, ROLES, TOP_CLEARANCE,
 } from './policy';
 
 /*
@@ -17,8 +17,10 @@ const RUNS = { numRuns: 2000 };
 
 const role = fc.constantFrom(...ROLES);
 const action = fc.constantFrom(...ACTIONS);
-const user: fc.Arbitrary<Principal> = fc.record({ role, orgId: fc.constantFrom(...ORGS), id: fc.constantFrom(...USERS), dept: fc.constantFrom(...DEPTS) })
-  .map(({ role: r, orgId, id, dept }) => ({ kind: 'user' as const, id, orgId, role: r, departmentId: hasDepartment(r) ? dept : null }));
+const clearance = fc.integer({ min: 0, max: TOP_CLEARANCE });
+const user: fc.Arbitrary<Principal> = fc.record({
+  role, orgId: fc.constantFrom(...ORGS), id: fc.constantFrom(...USERS), dept: fc.constantFrom(...DEPTS), clearance,
+}).map(({ role: r, orgId, id, dept, clearance: c }) => ({ kind: 'user' as const, id, orgId, role: r, departmentId: hasDepartment(r) ? dept : null, clearance: c }));
 const integration: fc.Arbitrary<Principal> = fc.record({
   orgId: fc.constantFrom(...ORGS), departmentId: fc.constantFrom(null, ...DEPTS), scopes: fc.subarray([...ACTIONS]),
 }).map((k) => ({ kind: 'integration' as const, id: 'key-1', ...k }));
@@ -125,7 +127,7 @@ describe('the policy table', () => {
     ['viewer', 'document:read', { departmentId: 'dept-x' }, true],
     ['viewer', 'member:read', { departmentId: 'dept-x' }, false],
   ] as [Role, Action, Partial<Resource>, boolean][])('%s → %s on %j is %s', (r, a, res, expected) => {
-    const p: Principal = { kind: 'user', id: 'user-1', orgId: 'org-a', role: r, departmentId: hasDepartment(r) ? 'dept-x' : null };
+    const p: Principal = { kind: 'user', id: 'user-1', orgId: 'org-a', role: r, departmentId: hasDepartment(r) ? 'dept-x' : null, clearance: 0 };
     expect(can(p, a, { orgId: 'org-a', departmentId: null, ...res })).toBe(expected);
   });
 
@@ -140,7 +142,7 @@ describe('the policy table', () => {
 });
 
 describe('role assignment and member management', () => {
-  const u = (r: Role, id = 'actor', departmentId: string | null = hasDepartment(r) ? 'dept-x' : null): Principal => ({ kind: 'user', id, orgId: 'org-a', role: r, departmentId });
+  const u = (r: Role, id = 'actor', departmentId: string | null = hasDepartment(r) ? 'dept-x' : null): Principal => ({ kind: 'user', id, orgId: 'org-a', role: r, departmentId, clearance: 0 });
   const key: Principal = { kind: 'integration', id: 'key', orgId: 'org-a', departmentId: null, scopes: [...ACTIONS] };
 
   test.each([
@@ -184,5 +186,93 @@ describe('role assignment and member management', () => {
     const detached = u('editor', 'me', null); // inconsistent on purpose: the database forbids it
     expect(can(detached, 'document:read', { orgId: 'org-a', departmentId: null })).toBe(false);
     expect(listFilter(detached, 'document:read')).toBeNull();
+  });
+});
+
+describe('sharing, clearance and sections', () => {
+  const grant: fc.Arbitrary<Grant> = fc.record({
+    subjectType: fc.constantFrom('user' as const, 'department' as const),
+    subjectId: fc.constantFrom(...USERS, ...DEPTS),
+    relation: fc.constantFrom('reader' as const, 'editor' as const),
+    expiresAt: fc.constantFrom(null, new Date(0), new Date(8.64e15)),
+  });
+  const grants = fc.array(grant, { maxLength: 4 });
+  const NOW = new Date('2026-01-01T00:00:00Z');
+  const rank = (a: Access) => ['none', 'read', 'edit'].indexOf(a);
+  const level = fc.integer({ min: 0, max: TOP_CLEARANCE });
+
+  test('shares never reach across organizations', () => {
+    fc.assert(fc.property(principal, resource, grants, (p, r, g) => {
+      fc.pre(p.orgId !== r.orgId);
+      expect(documentAccess(p, r, g, NOW)).toBe('none');
+    }), RUNS);
+  });
+
+  test('a share only ever adds access; without shares, access is exactly what the role gives', () => {
+    fc.assert(fc.property(principal, resource, grants, (p, r, g) => {
+      const base = documentAccess(p, r, [], NOW);
+      const expectedBase = can(p, 'document:update', r) ? 'edit' : can(p, 'document:read', r) ? 'read' : 'none';
+      expect(base).toBe(expectedBase);
+      expect(rank(documentAccess(p, r, g, NOW))).toBeGreaterThanOrEqual(rank(base));
+    }), RUNS);
+  });
+
+  test('API keys ignore shares, and expired shares count for nothing', () => {
+    fc.assert(fc.property(principal, resource, grants, (p, r, g) => {
+      const expired = g.map((x) => ({ ...x, expiresAt: new Date(0) }));
+      expect(documentAccess(p, r, expired, NOW)).toBe(documentAccess(p, r, [], NOW));
+      if (p.kind === 'integration') expect(documentAccess(p, r, g, NOW)).toBe(documentAccess(p, r, [], NOW));
+    }), RUNS);
+  });
+
+  test('a matching live share gives exactly its relation (or more, from the role)', () => {
+    const viewer: Principal = { kind: 'user', id: 'user-1', orgId: 'org-a', role: 'viewer', departmentId: 'dept-x', clearance: 0 };
+    const elsewhere = { orgId: 'org-a', departmentId: 'dept-y', ownerId: null };
+    const share = (subjectType: 'user' | 'department', subjectId: string, relation: 'reader' | 'editor'): Grant => ({ subjectType, subjectId, relation, expiresAt: null });
+    expect(documentAccess(viewer, elsewhere, [], NOW)).toBe('none');
+    expect(documentAccess(viewer, elsewhere, [share('user', 'user-1', 'reader')], NOW)).toBe('read');
+    expect(documentAccess(viewer, elsewhere, [share('department', 'dept-x', 'editor')], NOW)).toBe('edit');
+    expect(documentAccess(viewer, elsewhere, [share('user', 'user-2', 'editor'), share('department', 'dept-y', 'editor')], NOW)).toBe('none');
+    expect(documentAccess(viewer, elsewhere, [{ ...share('user', 'user-1', 'editor'), expiresAt: new Date('2026-01-01T00:00:01Z') }], NOW)).toBe('edit');
+    expect(documentAccess(viewer, elsewhere, [{ ...share('user', 'user-1', 'editor'), expiresAt: NOW }], NOW)).toBe('none'); // expired at this instant
+  });
+
+  test('a section is redacted exactly when clearance is below its classification, and never exceeds document access', () => {
+    fc.assert(fc.property(principal, fc.constantFrom<Access>('none', 'read', 'edit'), level, (p, doc, classification) => {
+      const access = sectionAccess(p, doc, classification);
+      const clearance = p.kind === 'user' ? p.clearance : 0;
+      expect(access).toBe(clearance >= classification ? doc : 'none');
+    }), RUNS);
+  });
+
+  test('classifying needs edit access and clearance for both levels', () => {
+    fc.assert(fc.property(user, fc.constantFrom<Access>('none', 'read', 'edit'), level, level, (p, doc, from, to) => {
+      const ok = canClassify(p, doc, from, to);
+      const clearance = p.kind === 'user' ? p.clearance : -1;
+      expect(ok).toBe(doc === 'edit' && clearance >= from && clearance >= to);
+    }), RUNS);
+    const key: Principal = { kind: 'integration', id: 'k', orgId: 'org-a', departmentId: null, scopes: [...ACTIONS] };
+    expect(canClassify(key, 'edit', 0, 0)).toBe(true);
+    expect(canClassify(key, 'edit', 0, 1)).toBe(false);
+  });
+
+  test('clearance levels run from unclassified (0) to top secret', () => {
+    expect(TOP_CLEARANCE).toBe(3);
+    expect(CLEARANCES[TOP_CLEARANCE]).toBe('top_secret');
+  });
+
+  test('only organization admins set clearance: not their own, never above their own', () => {
+    fc.assert(fc.property(principal, fc.constantFrom(...USERS), fc.integer({ min: -1, max: TOP_CLEARANCE + 1 }), (actor, target, lvl) => {
+      fc.pre(canSetClearance(actor, { id: target }, lvl));
+      expect(actor.kind === 'user' && actor.role === 'org_admin').toBe(true);
+      expect(actor.id).not.toBe(target);
+      expect(lvl).toBeGreaterThanOrEqual(0);
+      expect(actor.kind === 'user' && lvl <= actor.clearance).toBe(true);
+    }), RUNS);
+    const admin: Principal = { kind: 'user', id: 'a', orgId: 'o', role: 'org_admin', departmentId: null, clearance: 2 };
+    expect(canSetClearance(admin, { id: 'b' }, 2)).toBe(true);
+    expect(canSetClearance(admin, { id: 'b' }, 0)).toBe(true);
+    expect(canSetClearance(admin, { id: 'b' }, 3)).toBe(false);
+    expect(canSetClearance({ ...admin, role: 'department_admin', departmentId: 'd' }, { id: 'b' }, 0)).toBe(false);
   });
 });
