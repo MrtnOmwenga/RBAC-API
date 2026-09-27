@@ -1,0 +1,93 @@
+import { ForbiddenException, Injectable } from '@nestjs/common';
+import { AuditService, actorOf } from '../audit/audit.service';
+import { AuthService } from '../auth/auth.service';
+import { hashPassword } from '../auth/passwords';
+import { authorize } from '../common/http';
+import { findDepartment, findMember } from '../common/lookups';
+import { TenantContext } from '../database/tenant';
+import { canAssignRole, canManageMember, hasDepartment, listFilter, type Role } from '../policy/policy';
+
+type MemberRow = Awaited<ReturnType<typeof findMember>>;
+
+const view = (m: MemberRow) => ({
+  id: m.id, email: m.email, name: m.name, role: m.role, departmentId: m.department_id, disabled: m.disabled_at !== null, createdAt: m.created_at,
+});
+
+export interface NewMember {
+  email: string;
+  name: string;
+  password: string;
+  role: Role;
+  departmentId: string | null;
+}
+
+@Injectable()
+export class MembersService {
+  constructor(private readonly tenant: TenantContext, private readonly audit: AuditService, private readonly auth: AuthService) {}
+
+  async create(input: NewMember) {
+    const { db, principal } = this.tenant;
+    if (input.departmentId) await findDepartment(db, input.departmentId);
+    authorize(principal, 'member:create', { orgId: principal.orgId, departmentId: input.departmentId });
+    if (!canAssignRole(principal, { role: input.role, departmentId: input.departmentId })) throw new ForbiddenException(`Not allowed to create a ${input.role} there`);
+    const member = await db.insertInto('users').values({
+      org_id: principal.orgId, email: input.email, name: input.name, password_hash: await hashPassword(input.password),
+      role: input.role, department_id: input.departmentId,
+    }).returning(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'disabled_at', 'created_at']).executeTakeFirstOrThrow();
+    await this.audit.record(db, principal.orgId, actorOf(principal), {
+      action: 'member.create', resourceType: 'user', resourceId: member.id, detail: { role: input.role, departmentId: input.departmentId },
+    });
+    return view(member);
+  }
+
+  async list() {
+    const { db, principal } = this.tenant;
+    const filter = listFilter(principal, 'member:read');
+    if (!filter) throw new ForbiddenException('Not allowed to member:read');
+    let query = db.selectFrom('users').select(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'disabled_at', 'created_at']).orderBy('name');
+    if (filter.departmentId) query = query.where('department_id', '=', filter.departmentId);
+    return (await query.execute()).map(view);
+  }
+
+  async get(id: string) {
+    const { db, principal } = this.tenant;
+    const member = await findMember(db, id);
+    authorize(principal, 'member:read', { orgId: member.org_id, departmentId: member.department_id });
+    return view(member);
+  }
+
+  /** Changes role and/or department. The new combination must be one the actor may assign. */
+  async update(id: string, changes: { role?: Role; departmentId?: string | null }) {
+    const { db, principal } = this.tenant;
+    const member = await findMember(db, id);
+    authorize(principal, 'member:update', { orgId: member.org_id, departmentId: member.department_id });
+    const current = { id: member.id, role: member.role, departmentId: member.department_id };
+    if (!canManageMember(principal, current)) throw new ForbiddenException('Not allowed to manage this member');
+
+    const role = changes.role ?? member.role;
+    const departmentId = changes.departmentId !== undefined ? changes.departmentId : (hasDepartment(role) ? member.department_id : null);
+    if (departmentId) await findDepartment(db, departmentId);
+    if (!canAssignRole(principal, { id: member.id, role, departmentId })) throw new ForbiddenException(`Not allowed to make this member a ${role} there`);
+
+    const updated = await db.updateTable('users').set({ role, department_id: departmentId }).where('id', '=', id)
+      .returning(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'disabled_at', 'created_at']).executeTakeFirstOrThrow();
+    await this.audit.record(db, principal.orgId, actorOf(principal), {
+      action: 'member.update', resourceType: 'user', resourceId: id,
+      detail: { from: { role: member.role, departmentId: member.department_id }, to: { role, departmentId } },
+    });
+    return view(updated);
+  }
+
+  /** Disables an account; its sessions end immediately (see TenantInterceptor and refresh). */
+  async disable(id: string) {
+    const { db, principal } = this.tenant;
+    const member = await findMember(db, id);
+    authorize(principal, 'member:disable', { orgId: member.org_id, departmentId: member.department_id });
+    if (!canManageMember(principal, { id: member.id, role: member.role, departmentId: member.department_id })) {
+      throw new ForbiddenException('Not allowed to manage this member');
+    }
+    await db.updateTable('users').set({ disabled_at: new Date() }).where('id', '=', id).execute();
+    await this.auth.revokeAllFor(db, id);
+    await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'member.disable', resourceType: 'user', resourceId: id });
+  }
+}
