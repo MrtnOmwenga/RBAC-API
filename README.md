@@ -16,7 +16,7 @@ k6 · Docker (distroless) · React + TipTap (demo UI)
 
 ## Redacted: the live demo
 
-![Redacted: four agents see one briefing through their own permissions; the Director lowers the Analyst's clearance mid-sentence and a section blacks out on their screen, then shares the briefing with the Liaison and the NO ACCESS stamp lifts](docs/redacted.gif)
+![Redacted: four agents see one briefing through their own permissions. The Director classifies a sentence and it blacks out on the Intern's screen, lowers the Analyst's clearance and their copy blacks out, then shares the briefing with the Liaison and the NO ACCESS stamp lifts](docs/redacted.gif)
 
 The demo is a briefing room for secret agents, and it exists to make the backend visible: the UI
 is deliberately small, and the product here is the permission model underneath it. Four agents
@@ -26,14 +26,30 @@ WebSocket, as if on four laptops. The Director changes their access live.
 | On screen | What the backend is doing |
 |---|---|
 | Black bars instead of text | Sections above your clearance are never sent: not by the REST API, not over the WebSocket. A browser test records everything the Intern's page receives and checks the hidden text isn't in it. |
+| A bar in the middle of a sentence | Words classified above your clearance: you read a copy the server writes at your level, with those words replaced. The full text only goes to people cleared for every word in it. |
+| The Director selects words and classifies them: they black out for the others | The update is checked *before* it's applied: anyone connected who isn't cleared is moved to their projection first. Nobody can classify above their own clearance. |
 | Clearance lowered while the Analyst types: the section blacks out | A pg `NOTIFY` on commit; the collaboration server re-checks every open connection in the organization and drops the one that lost access. |
 | Made a viewer mid-sentence: the editor locks | Same re-check: the connection turns read-only, and anything typed afterwards is discarded by the server, not just hidden by the UI. |
 | Shared with the Liaison: the NO ACCESS stamp lifts | A share (person or department, reader or editor, optionally temporary) reaches across departments but never across organizations. |
 | "Why can I see this?" | An endpoint that lists every reason for access (role, shares) and what clearance hides. |
 | Surveillance log, "chain verified" | The hash-chained audit log, with its verification endpoint. |
 
-Run it locally with Docker (below) and open http://localhost:3000. Each visitor gets a private,
-throwaway agency, deleted after two hours.
+| The Intern: bars mid-sentence, and why | The Director's desk: every control is an API call |
+|---|---|
+| ![The Intern's pane: a whole sentence and a company name barred inside the one section they can read, three sections fully redacted, and "Why can I see this?" listing their role and what their clearance hides](docs/images/intern.png) | ![The Director's controls for clearance, role and sharing, above the surveillance log with "chain verified"](docs/images/director-desk.png) |
+
+![All four agents after the Director classified a sentence and shared the briefing with the Liaison: portion markings for those cleared, bars for the Intern](docs/images/room-after.png)
+
+**Try it** (Docker, below; then open http://localhost:3000 and enter the briefing room). Each
+visitor gets a private, throwaway agency, deleted after two hours.
+
+1. In the Director's copy (top left), select a sentence in *Cover story* and click **S**: it turns
+   into a bar in the Intern's copy.
+2. Click into the Analyst's *Contacts* section and type; meanwhile, set their clearance to
+   *unclassified* on the Director's desk. The section blacks out under their cursor.
+3. Set the Analyst's role to *viewer*: their editor locks.
+4. Share the briefing with the Liaison: the NO ACCESS stamp lifts.
+5. Click **Why can I see this?** in any pane, and watch the surveillance log fill up.
 
 ## Highlights
 
@@ -61,6 +77,9 @@ throwaway agency, deleted after two hours.
   reader or editor, optionally for a limited time. Documents are split into sections, each with a
   classification; a member sees a section only with document access *and* enough clearance.
   Clearance is set only by organization admins, never for themselves, never above their own.
+- **Word-level classification.** Editors classify words the way they'd make them bold. Readers
+  below a word's level get a server-written copy with it replaced by a bar, so hidden words never
+  reach their browser ("mark to classify, project to read").
 - **Live authorization for live editing.** Collaborative editing (Yjs CRDTs over WebSockets)
   checks the same policy when a connection opens and again whenever permissions change, across
   server instances via PostgreSQL `LISTEN/NOTIFY`. Read-only connections' updates are dropped on
@@ -155,8 +174,8 @@ any permission change ──► pg_notify('rbac_access_changed', org) on commit
   restores whoever may still edit, and a recovery sync means nothing they typed meanwhile is lost.
 
 **[docs/COLLABORATION.md](docs/COLLABORATION.md)** explains the whole design: why redaction has to
-be structural, options for word-level redaction, how concurrent edits merge (and what a CRDT
-doesn't solve), and the permission-change race and how it's closed.
+be structural, word-level classification and the options weighed for it, how concurrent edits
+merge (and what a CRDT doesn't solve), and the permission-change race and how it's closed.
 - The access token goes in the first WebSocket message rather than a cookie, so there is no
   ambient credential for another site to use.
 
@@ -170,15 +189,16 @@ npm run test:mutation    # Stryker on the policy, tokens, audit chain and canoni
 k6 run load/smoke.js     # against a running stack
 ```
 
-587 tests in all: 69 unit, 513 end-to-end (441 of them the authorization matrix) and 5 in the
+603 tests in all: 79 unit, 518 end-to-end (441 of them the authorization matrix) and 6 in the
 browser.
 
 | Suite | What it proves |
 |---|---|
 | **Authorization matrix** (441 cases) | Eight principals (five roles, three kinds of API key) × every action × own department, other department, other organization. Expected results come from the policy, so every endpoint is shown to enforce exactly the table above. Removing a single permission check (the one on document updates) fails 13 cases. |
 | **Realtime** | Real WebSocket clients: cleared editors sync and are saved and audited; an uncleared member is refused and receives nothing; a reader's edits reach no one; demotion mid-session turns the connection read-only; lowered clearance or a revoked share disconnects; personal channels reach members with no access yet; no edit lands once a demotion has committed; edits refused during a re-check are recovered. |
+| **Word-level classification** | A reader below the marks is refused the full text; their projection shows bars, and the hidden words aren't anywhere in the document bytes they receive; projections follow edits live; classifying above a connected editor's clearance disconnects them before the next keystroke; classifying above your own clearance is refused; marks are saved and audited. A property test checks 500 random documents for leaks. |
 | **Sharing and sections** | Redacted sections carry no heading or text; department and user shares, temporary shares expiring, cross-organization shares refused; classification bounded by clearance; "why can I see this?"; every change audited. |
-| **Browser** (Playwright) | Everything the Intern's page receives, HTTP and every WebSocket frame, is scanned for the hidden text; the four-pane room; demotion mid-typing; live redaction; sharing; the surveillance log. |
+| **Browser** (Playwright) | Everything the Intern's page receives, HTTP and every WebSocket frame, is scanned for the hidden text, classified words included; the four-pane room; demotion mid-typing; live redaction; words classified by the Director blacking out mid-sentence; sharing; the surveillance log. |
 | **Tokens** | `alg: none`, wrong secret, edited payload, expired, wrong audience or issuer, wrong token type, tokens for unknown users or the wrong organization, keys sent as tokens and tokens as keys, revoked and expired keys: all 401. |
 | **Escalation** | Mass assignment, department admins creating or promoting beyond their power or outside their department, self-promotion, API keys requesting human-only scopes or acting beyond them. |
 | **Tenancy** | As the API's own database role: no rows without a tenant, only one tenant's rows with one, writes into another tenant refused, the audit log immune to UPDATE and DELETE. |
@@ -191,9 +211,9 @@ database, and each Jest worker clones its own copy in milliseconds. Tests create
 organization for each case, so nothing needs cleaning up and nothing is shared. CI shards the e2e
 suite across two runners.
 
-**Mutation testing.** Stryker mutates the policy engine, token handling, the audit chain and
-canonical JSON, and CI fails below 95%. The current score is 100%. Three mutants are marked as
-equivalent in the code, each with the reason.
+**Mutation testing.** Stryker mutates the policy engine, token handling, the audit chain,
+canonical JSON and the projection code, and CI fails below 95%. The current score is 100%. Five
+mutants are marked as equivalent in the code, each with the reason.
 
 **Load.** `load/smoke.js` runs 20 virtual users listing, reading and editing documents for 30
 seconds, and fails the run if reads exceed 100 ms p95, writes exceed 400 ms p95, or more than 1% of
@@ -233,7 +253,9 @@ curl -s localhost:3000/audit-events/verify -H "authorization: Bearer $TOKEN"
 ```
 
 For development: `npm install`, `cp .env.example .env`, `npm run migrate:dev` (with
-`MIGRATION_DATABASE_URL` set), then `npm run start:dev`.
+`MIGRATION_DATABASE_URL` set), then `npm run start:dev` (the API on :3000). For the demo UI with hot
+reload, `npm --prefix web install` and `npm --prefix web run dev` (Vite on :5173, proxying the API
+and the WebSocket to :3000); set `DEMO_MODE=true` for the API.
 
 <details>
 <summary>API</summary>
@@ -249,7 +271,7 @@ For development: `npm install`, `cp .env.example .env`, `npm run migrate:dev` (w
 | `POST /api-keys` · `GET /api-keys` · `DELETE /api-keys/:id` | integration keys (the key is shown once) |
 | `GET /documents/:id/briefing` · `POST /documents/:id/sections` · `PATCH`, `DELETE /sections/:id` | sectioned documents, redacted per reader |
 | `GET`, `POST /documents/:id/shares` · `DELETE /documents/:id/shares/:grantId` · `GET /documents/:id/explain` | sharing and "why can I see this?" |
-| `ws /collab` (rooms `section:`, `briefing:`, `member:`) · `POST /demo/sessions` (demo mode) | live editing; the demo |
+| `ws /collab` (rooms `section:`, `projection:`, `briefing:`, `member:`) · `POST /demo/sessions` (demo mode) | live editing; the demo |
 | `GET /audit-events` · `GET /audit-events/verify` | audit log and chain check |
 | `GET /health/live` · `GET /health/ready` | probes |
 

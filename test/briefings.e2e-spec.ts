@@ -36,7 +36,7 @@ test('each reader sees the sections their clearance allows; the rest are redacte
   expect(intern.sections.map((s: { access: string }) => s.access)).toEqual(['read', 'none', 'none', 'none']);
   const raw = JSON.stringify(intern);
   for (const hidden of ['Contacts', 'Asset NIGHTJAR', 'Exfiltration']) expect(raw).not.toContain(hidden);
-  expect(intern.sections[3]).toEqual({ id: a.sections.topSecret, position: 4, classification: 3, access: 'none', redactedLength: 40 });
+  expect(intern.sections[3]).toEqual({ id: a.sections.topSecret, position: 4, classification: 3, access: 'none', view: 'none', redactedLength: 40 });
 
   const analyst = (await briefing(a.analyst, a.doc).expect(200)).body;
   expect(analyst.sections.map((s: { access: string }) => s.access)).toEqual(['edit', 'edit', 'edit', 'none']);
