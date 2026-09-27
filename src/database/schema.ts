@@ -8,6 +8,7 @@ type NullableTimestamp = ColumnType<Date | null, Date | string | null | undefine
 export interface OrganizationsTable {
   id: string;
   name: string;
+  is_demo: Generated<boolean>;
   created_at: CreatedAt;
 }
 
@@ -26,6 +27,7 @@ export interface UsersTable {
   password_hash: string;
   role: Role;
   department_id: string | null;
+  clearance: Generated<number>;
   disabled_at: NullableTimestamp;
   failed_logins: Generated<number>;
   locked_until: NullableTimestamp;
@@ -95,6 +97,31 @@ export interface AuditEventsTable {
   hash: string;
 }
 
+export interface DocumentGrantsTable {
+  id: Generated<string>;
+  org_id: string;
+  document_id: string;
+  subject_type: 'user' | 'department';
+  subject_id: string;
+  relation: 'reader' | 'editor';
+  granted_by: string;
+  expires_at: NullableTimestamp;
+  created_at: CreatedAt;
+}
+
+export interface DocumentSectionsTable {
+  id: Generated<string>;
+  org_id: string;
+  document_id: string;
+  position: number;
+  heading: string;
+  classification: Generated<number>;
+  state: Generated<Buffer>;
+  text_length: Generated<number>;
+  created_at: CreatedAt;
+  updated_at: Timestamp;
+}
+
 export interface Database {
   organizations: OrganizationsTable;
   departments: DepartmentsTable;
@@ -104,4 +131,6 @@ export interface Database {
   projects: ProjectsTable;
   documents: DocumentsTable;
   audit_events: AuditEventsTable;
+  document_grants: DocumentGrantsTable;
+  document_sections: DocumentSectionsTable;
 }

@@ -32,6 +32,8 @@ services:
       PGPASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (openssl rand -hex 32)}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      # The public "Redacted" demo at http://localhost:3000 (throwaway agencies, deleted after 2 h).
+      DEMO_MODE: ${DEMO_MODE:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     read_only: true
     cap_drop: [ALL]
