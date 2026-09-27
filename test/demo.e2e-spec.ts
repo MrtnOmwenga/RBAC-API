@@ -13,10 +13,14 @@ describe('demo mode on', () => {
 
   test('a session is a private agency where each character sees what their access allows', async () => {
     const s = await start();
-    const view = async (key: string) => (await t.http().get(`/documents/${s.briefingId}/briefing`).set(as(s, key))).body;
-    expect((await view('director')).sections.map((x: { access: string }) => x.access)).toEqual(['edit', 'edit', 'edit', 'edit']);
-    expect((await view('analyst')).sections.map((x: { access: string }) => x.access)).toEqual(['edit', 'edit', 'edit', 'none']);
-    expect((await view('intern')).sections.map((x: { access: string }) => x.access)).toEqual(['read', 'none', 'none', 'none']);
+    const view = async (key: string) => ((await t.http().get(`/documents/${s.briefingId}/briefing`).set(as(s, key))).body as {
+      sections: { access: string; view: string }[];
+    }).sections.map((x) => `${x.view}:${x.access}`);
+    expect(await view('director')).toEqual(['full:edit', 'full:edit', 'full:edit', 'full:edit']);
+    // "The asset" has words marked top secret: the Analyst reads it through a projection.
+    expect(await view('analyst')).toEqual(['full:edit', 'full:edit', 'projection:read', 'none:none']);
+    // "Cover story" has a confidential company name: the Intern reads that section as a projection.
+    expect(await view('intern')).toEqual(['projection:read', 'none:none', 'none:none', 'none:none']);
     await t.http().get(`/documents/${s.briefingId}/briefing`).set(as(s, 'liaison')).expect(403);
     const other = await start();
     await t.http().get(`/documents/${s.briefingId}/briefing`).set(as(other, 'director')).expect(404);

@@ -48,8 +48,62 @@ export function type(doc: Y.Doc, text: string): void {
   doc.getXmlFragment('default').push([paragraph]);
 }
 
+/** The text of each paragraph, joined by newlines (formatting such as classification marks ignored). */
 export const plainText = (doc: Y.Doc): string => doc.getXmlFragment('default').toArray()
-  .map((p) => (p instanceof Y.XmlElement ? p.toArray().map((t) => (t instanceof Y.XmlText ? t.toString() : '')).join('') : '')).join('\n');
+  .map((p) => (p instanceof Y.XmlElement ? p.toArray().map((t) => (t instanceof Y.XmlText
+    ? (t.toDelta() as { insert: unknown }[]).map((d) => (typeof d.insert === 'string' ? d.insert : '')).join('') : '')).join('') : ''))
+  .join('\n');
+
+/** Classifies every occurrence of `words`, the way the editor's mark does. */
+export function mark(doc: Y.Doc, words: string, level: number): void {
+  doc.transact(() => {
+    for (const p of doc.getXmlFragment('default').toArray()) {
+      if (!(p instanceof Y.XmlElement)) continue;
+      for (const t of p.toArray()) {
+        if (!(t instanceof Y.XmlText)) continue;
+        const text = (t.toDelta() as { insert: unknown }[]).map((d) => (typeof d.insert === 'string' ? d.insert : '')).join('');
+        const at = text.indexOf(words);
+        if (at >= 0) t.format(at, words.length, { classified: { level } });
+      }
+    }
+  });
+}
+
+/** Types `text` at the end of the first paragraph containing `after`, carrying a classification. */
+export function typeClassified(doc: Y.Doc, after: string, text: string, level: number): void {
+  for (const p of doc.getXmlFragment('default').toArray()) {
+    const t = p instanceof Y.XmlElement ? p.toArray()[0] : undefined;
+    if (t instanceof Y.XmlText && plainText(doc).includes(after)) {
+      t.insert(t.length, text, { classified: { level } });
+      return;
+    }
+  }
+}
+
+/** A section's stored state: paragraphs of [text, level] runs (level 0 = unmarked). */
+export function sectionWithMarks(paragraphs: [string, number][][]): { state: Buffer; length: number; marked: number } {
+  const doc = new Y.Doc();
+  doc.transact(() => {
+    const texts: [Y.XmlText, [string, number][]][] = [];
+    for (const runs of paragraphs) {
+      const p = new Y.XmlElement('paragraph');
+      const t = new Y.XmlText();
+      p.insert(0, [t]);
+      doc.getXmlFragment('default').push([p]);
+      texts.push([t, runs]);
+    }
+    for (const [t, runs] of texts) t.applyDelta(runs.map(([insert, level]) => (level ? { insert, attributes: { classified: { level } } } : { insert })));
+  });
+  const all = paragraphs.flat();
+  return {
+    state: Buffer.from(Y.encodeStateAsUpdate(doc)),
+    length: all.reduce((n, [t]) => n + t.length, 0),
+    marked: all.reduce((m, [, l]) => Math.max(m, l), 0),
+  };
+}
+
+/** Everything a client's copy of a document holds, as text: for checking what was (not) received. */
+export const everythingIn = (doc: Y.Doc): string => Buffer.from(Y.encodeStateAsUpdate(doc)).toString('utf8');
 
 /** Polls until `check` passes (or fails after `timeoutMs`), for effects that arrive asynchronously. */
 export async function eventually(check: () => void | Promise<void>, timeoutMs = 5000): Promise<void> {

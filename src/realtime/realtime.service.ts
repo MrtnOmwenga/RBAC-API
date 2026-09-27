@@ -5,6 +5,7 @@ import { HttpAdapterHost } from '@nestjs/core';
 import { type Connection, Hocuspocus, OutgoingMessage } from '@hocuspocus/server';
 import type { Kysely, Transaction } from 'kysely';
 import { Client } from 'pg';
+import { createDecoder, readVarString, readVarUint, readVarUint8Array } from 'lib0/decoding';
 import { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
 import { AuditService } from '../audit/audit.service';
@@ -14,7 +15,8 @@ import { ACCESS_CHANNEL, loadDocumentAccess } from '../briefings/access';
 import { CONFIG, type Config } from '../config/config';
 import type { Database } from '../database/schema';
 import { DB, withTenant } from '../database/tenant';
-import { type Access, type Principal, sectionAccess } from '../policy/policy';
+import { type Access, CLEARANCES, type Principal, sectionView } from '../policy/policy';
+import { FRAGMENT, maxMarkLevel, project } from './projection';
 
 /*
  * Live collaborative editing (Yjs over WebSockets, via Hocuspocus), with the same authorization as
@@ -27,6 +29,13 @@ import { type Access, type Principal, sectionAccess } from '../policy/policy';
  *   their access changed, so the page can re-fetch it.
  * - `member:<id>` rooms are personal: only that member may join. They ping on any access change in
  *   the organization, so even someone with no access yet learns when they've been given some.
+ * - Words inside a section can be marked with a classification (docs/COLLABORATION.md, "mark to
+ *   classify, project to read"). A section's full text is only for members cleared for every mark
+ *   in it; others read `projection:<id>:<level>`, a read-only copy the server derives at their
+ *   clearance with the words above it replaced by bars. Every update to a full text is checked
+ *   *before* it is applied: marking above your own clearance closes your connection, and marking
+ *   above a connected member's clearance disconnects them first, so they never receive what
+ *   follows.
  * - Any permission change is announced with pg_notify (see briefings/access.ts). Each server
  *   re-checks its open connections for that organization: lost access sends an `access: none`
  *   message and closes the connection, a demotion makes it read-only mid-edit, a promotion makes it writable.
@@ -35,20 +44,36 @@ import { type Access, type Principal, sectionAccess } from '../policy/policy';
  * credential for a cross-site page to ride on.
  */
 
-type Target = { kind: 'section' | 'briefing' | 'member'; id: string };
+type Target = { kind: 'section' | 'briefing' | 'member'; id: string } | { kind: 'projection'; id: string; level: number };
 interface Context {
   userId: string;
   orgId: string;
   target: Target;
   access: Access;
+  clearance: number;
 }
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const ROOM = new RegExp(`^(section|briefing|member):(${UUID})$`, 'i');
+const PROJECTION = new RegExp(`^projection:(${UUID}):([0-${CLEARANCES.length - 1}])$`, 'i');
+const SYNC_MESSAGE = 0; // Hocuspocus message type carrying Yjs sync
+const SYNC_STEP_2 = 1;
+const SYNC_UPDATE = 2;
 
 export function parseRoom(name: string): Target | null {
+  const projection = PROJECTION.exec(name);
+  if (projection) return { kind: 'projection', id: projection[1]!.toLowerCase(), level: Number(projection[2]) };
   const match = ROOM.exec(name);
-  return match ? { kind: match[1]!.toLowerCase() as Target['kind'], id: match[2]!.toLowerCase() } : null;
+  return match ? { kind: match[1]!.toLowerCase() as 'section' | 'briefing' | 'member', id: match[2]!.toLowerCase() } : null;
+}
+
+/** The Yjs update inside a raw client message, if it carries one. */
+function updateIn(message: Uint8Array): Uint8Array | null {
+  const decoder = createDecoder(message);
+  readVarString(decoder); // the room name
+  if (readVarUint(decoder) !== SYNC_MESSAGE) return null;
+  const type = readVarUint(decoder);
+  return type === SYNC_STEP_2 || type === SYNC_UPDATE ? readVarUint8Array(decoder) : null;
 }
 
 /** Characters of text in a Yjs XML fragment (what TipTap edits), ignoring markup. */
@@ -68,6 +93,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   private readonly refreshing = new Map<string, Promise<void>>(); // organization → running re-check
   private readonly locked = new Set<Connection<Context>>(); // made read-only pending a re-check
   private readonly fallbacks = new Map<string, NodeJS.Timeout>(); // organization → re-check if no notification comes
+  private readonly reprojecting = new Map<string, NodeJS.Timeout>(); // section → pending projection rebuild
   private listener?: Client;
   private closing = false;
   readonly hocuspocus: Hocuspocus<Context>;
@@ -87,12 +113,15 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
         await this.load(documentName, document);
         return document;
       },
+      beforeHandleMessage: ({ connection, document, update }) => this.guard(connection, document, update),
       onChange: async ({ documentName, context }) => {
         if (context?.userId) {
           const set = this.editors.get(documentName) ?? new Set<string>();
           set.add(context.userId);
           this.editors.set(documentName, set);
         }
+        const target = parseRoom(documentName);
+        if (target?.kind === 'section') this.scheduleProjection(target.id);
         return Promise.resolve();
       },
       onStoreDocument: ({ document, documentName }) => this.store(documentName, document),
@@ -126,7 +155,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     this.hocuspocus.flushPendingStores();
     this.hocuspocus.closeConnections();
     this.sockets.close();
-    for (const timer of this.fallbacks.values()) clearTimeout(timer);
+    for (const timer of [...this.fallbacks.values(), ...this.reprojecting.values()]) clearTimeout(timer);
     await this.listener?.end().catch(() => undefined);
     await Promise.all(this.refreshing.values());
   }
@@ -148,24 +177,99 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     const claims = verifyAccessToken(this.config.JWT_SECRET, token);
     const target = parseRoom(room);
     if (!claims || !target) throw new Error('unauthorized');
-    const access = await withTenant(this.db, claims.orgId, async (trx) => {
+    const { access, clearance } = await withTenant(this.db, claims.orgId, async (trx) => {
       const principal = await loadPrincipal(trx, { kind: 'user', id: claims.userId, orgId: claims.orgId });
-      return principal ? this.accessFor(trx, principal, target) : 'none';
+      return {
+        access: principal ? await this.accessFor(trx, principal, target) : 'none',
+        clearance: principal?.kind === 'user' ? principal.clearance : 0,
+      };
     });
     if (access === 'none') throw new Error('forbidden');
     connectionConfig.readOnly = target.kind !== 'section' || access !== 'edit';
     this.orgOf.set(room, claims.orgId);
-    return { userId: claims.userId, orgId: claims.orgId, target, access };
+    return { userId: claims.userId, orgId: claims.orgId, target, access, clearance };
+  }
+
+  /** The highest level marked in a section: live if it's open (the stored value lags saves). */
+  markedLevel(sectionId: string, stored: number): number {
+    const live = this.hocuspocus.documents.get(`section:${sectionId}`);
+    return live ? maxMarkLevel(live.getXmlFragment(FRAGMENT)) : stored;
+  }
+
+  /**
+   * Checked before any update to a section's full text is applied. Marking words above your own
+   * clearance closes your connection. Marking them above another connected member's clearance
+   * disconnects that member first, so the update and everything after it never reach them; their
+   * page then switches to the projection.
+   */
+  private guard(connection: Connection<Context>, document: Y.Doc, message: Uint8Array): Promise<void> {
+    const { context } = connection;
+    if (context?.target.kind !== 'section' || connection.readOnly) return Promise.resolve();
+    const update = updateIn(message);
+    if (!update) return Promise.resolve();
+    const probe = new Y.Doc();
+    Y.applyUpdate(probe, Y.encodeStateAsUpdate(document));
+    Y.applyUpdate(probe, update);
+    const after = maxMarkLevel(probe.getXmlFragment(FRAGMENT));
+    probe.destroy();
+    if (after > context.clearance) {
+      throw Object.assign(new Error('marked above clearance'), { code: 4403, reason: 'Marked above your clearance' });
+    }
+    if (after <= maxMarkLevel(document.getXmlFragment(FRAGMENT))) return Promise.resolve();
+    const open = (this.hocuspocus.documents.get(`section:${context.target.id}`)?.getConnections() ?? []) as Connection<Context>[];
+    for (const other of open) {
+      if (other !== connection && other.context.clearance < after) {
+        other.sendStateless(JSON.stringify({ type: 'access', access: 'none' }));
+        other.close({ code: 4403, reason: 'Section now above your clearance' });
+      }
+    }
+    void this.refresh(context.orgId); // every page re-fetches: some now read a projection
+    return Promise.resolve();
+  }
+
+  /** Rebuilds the open projections of a section shortly after its full text changes. */
+  private scheduleProjection(sectionId: string): void {
+    if (this.reprojecting.has(sectionId)) return;
+    const timer = setTimeout(() => {
+      this.reprojecting.delete(sectionId);
+      void this.reproject(sectionId);
+    }, 100);
+    timer.unref();
+    this.reprojecting.set(sectionId, timer);
+  }
+
+  private async reproject(sectionId: string, only?: { room: string; document: Y.Doc }): Promise<void> {
+    const targets = only ? [[only.room, only.document] as const] : [...this.hocuspocus.documents]
+      .filter(([room]) => room.startsWith(`projection:${sectionId}:`));
+    if (targets.length === 0) return;
+    let source = this.hocuspocus.documents.get(`section:${sectionId}`) as Y.Doc | undefined;
+    if (!source) {
+      const orgId = this.orgOf.get(targets[0]![0]);
+      if (!orgId) return;
+      const row = await withTenant(this.db, orgId, (trx) => trx.selectFrom('document_sections').select('state').where('id', '=', sectionId).executeTakeFirst());
+      source = new Y.Doc();
+      if (row?.state.length) Y.applyUpdate(source, new Uint8Array(row.state));
+    }
+    for (const [room, document] of targets) {
+      const target = parseRoom(room);
+      if (target?.kind !== 'projection') continue;
+      document.transact(() => project(source.getXmlFragment(FRAGMENT), document.getXmlFragment(FRAGMENT), target.level), 'projection');
+    }
   }
 
   private async accessFor(trx: Transaction<Database>, principal: Principal, target: Target): Promise<Access> {
     try {
       if (target.kind === 'member') return principal.id === target.id ? 'read' : 'none';
       if (target.kind === 'briefing') return (await loadDocumentAccess(trx, principal, target.id)).access;
-      const section = await trx.selectFrom('document_sections').select(['document_id', 'classification']).where('id', '=', target.id).executeTakeFirst();
+      const section = await trx.selectFrom('document_sections').select(['document_id', 'classification', 'max_mark_level'])
+        .where('id', '=', target.id).executeTakeFirst();
       if (!section) return 'none';
       const { access } = await loadDocumentAccess(trx, principal, section.document_id);
-      return sectionAccess(principal, access, section.classification);
+      const view = sectionView(principal, access, section.classification, this.markedLevel(target.id, section.max_mark_level));
+      if (target.kind !== 'projection') return view.mode === 'full' ? view.access : 'none';
+      // A projection is readable by anyone who may see the section, at or below their clearance.
+      const clearance = principal.kind === 'user' ? principal.clearance : 0;
+      return view.mode !== 'none' && target.level <= clearance && target.level >= section.classification ? 'read' : 'none';
     } catch {
       return 'none'; // the document is gone, or invisible under row-level security
     }
@@ -174,6 +278,10 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   private async load(room: string, document: Y.Doc): Promise<void> {
     const target = parseRoom(room);
     const orgId = this.orgOf.get(room);
+    if (target?.kind === 'projection' && orgId) {
+      await this.reproject(target.id, { room, document });
+      return;
+    }
     if (target?.kind !== 'section' || !orgId) return;
     const row = await withTenant(this.db, orgId, (trx) => trx.selectFrom('document_sections').select('state').where('id', '=', target.id).executeTakeFirst());
     if (row?.state.length) Y.applyUpdate(document, new Uint8Array(row.state));
@@ -186,15 +294,20 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     if (target?.kind !== 'section' || !orgId) return;
     const editors = [...(this.editors.get(room) ?? [])];
     this.editors.delete(room);
+    const marked = maxMarkLevel(document.getXmlFragment(FRAGMENT));
     await withTenant(this.db, orgId, async (trx) => {
+      const before = await trx.selectFrom('document_sections').select('max_mark_level').where('id', '=', target.id).executeTakeFirst();
       const updated = await trx.updateTable('document_sections').set({
         state: Buffer.from(Y.encodeStateAsUpdate(document)),
-        text_length: textLength(document.getXmlFragment('default')),
+        text_length: textLength(document.getXmlFragment(FRAGMENT)),
+        max_mark_level: marked,
         updated_at: new Date(),
       }).where('id', '=', target.id).returning('document_id').executeTakeFirst();
       if (updated && editors.length) {
+        const markedChanged = before !== undefined && before.max_mark_level !== marked;
         await this.audit.record(trx, orgId, { actorType: 'user', actorId: editors[0]! }, {
-          action: 'section.edit', resourceType: 'document', resourceId: updated.document_id, detail: { section: target.id, editors },
+          action: 'section.edit', resourceType: 'document', resourceId: updated.document_id,
+          detail: { section: target.id, editors, ...(markedChanged ? { marked: { from: CLEARANCES[before.max_mark_level], to: CLEARANCES[marked] } } : {}) },
         });
       }
     });
@@ -251,6 +364,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
         const { context } = connection;
         const access = await withTenant(this.db, orgId, async (trx) => {
           const principal = await loadPrincipal(trx, { kind: 'user', id: context.userId, orgId });
+          if (principal?.kind === 'user') context.clearance = principal.clearance;
           return principal ? this.accessFor(trx, principal, context.target) : 'none';
         });
         const wasLocked = this.locked.delete(connection);

@@ -87,10 +87,10 @@ export class DemoService implements OnApplicationBootstrap, OnApplicationShutdow
         author_id: ids.analyst!, api_key_id: null, updated_at: new Date(),
       }).returning('id').executeTakeFirstOrThrow();
       for (const [i, s] of NIGHTJAR.sections.entries()) {
-        const { state, length } = sectionState(s.text);
+        const { state, length, marked } = sectionState(s.text);
         await trx.insertInto('document_sections').values({
           org_id: orgId, document_id: document.id, position: i + 1, heading: s.heading, classification: s.classification,
-          state, text_length: length, updated_at: new Date(),
+          state, text_length: length, max_mark_level: marked, updated_at: new Date(),
         }).execute();
       }
       await this.audit.record(trx, orgId, { actorType: 'user', actorId: ids.director! }, { action: 'organization.create', resourceType: 'organization', resourceId: orgId, detail: { demo: true } });

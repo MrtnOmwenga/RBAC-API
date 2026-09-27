@@ -204,3 +204,25 @@ export function canSetClearance(actor: Principal, target: { id: string }, level:
   return actor.kind === 'user' && actor.role === 'org_admin' && actor.id !== target.id
     && level >= 0 && level <= actor.clearance;
 }
+
+// ─── Word-level classification ──────────────────────────────────────────────────────────────────
+
+/**
+ * How a principal sees one section, given the section's own classification and the highest
+ * classification marked on any words inside it ("mark to classify, project to read"):
+ * - `full`: the real text (editable with edit access), for those cleared for every mark;
+ * - `projection`: a read-only copy made by the server at their clearance, with words above it
+ *   replaced by bars; for those cleared for the section but not for all its marks;
+ * - `none`: the whole section is redacted.
+ */
+export type SectionView = { mode: 'full'; access: Exclude<Access, 'none'> } | { mode: 'projection'; level: Clearance } | { mode: 'none' };
+
+export function sectionView(principal: Principal, documentLevel: Access, classification: Clearance, markedLevel: Clearance): SectionView {
+  const clearance = principal.kind === 'user' ? principal.clearance : 0;
+  if (documentLevel === 'none' || clearance < classification) return { mode: 'none' };
+  if (clearance >= markedLevel) return { mode: 'full', access: documentLevel };
+  return { mode: 'projection', level: clearance };
+}
+
+/** Marking words needs edit access to the section's full text and clearance for the mark's level. */
+export const canMark = (principal: Principal, documentLevel: Access, level: Clearance): boolean => canClassify(principal, documentLevel, 0, level);
