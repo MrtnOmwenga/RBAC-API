@@ -17,6 +17,7 @@ import { AuthenticationGuard, TenantInterceptor } from './auth/authentication';
 import { BriefingsController } from './briefings/briefings.controller';
 import { BriefingsService } from './briefings/briefings.service';
 import { RealtimeService } from './realtime/realtime.service';
+import { AccessChanges } from './realtime/access-changes';
 import { DemoController } from './demo/demo.controller';
 import { DemoService } from './demo/demo.service';
 import { ProblemDetailsFilter } from './common/http';
@@ -73,7 +74,7 @@ export class AppModule {
         ApiKeysController, AuditController, HealthController, BriefingsController, DemoController,
       ],
       providers: [
-        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService, DemoService,
+        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService, AccessChanges, DemoService,
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthenticationGuard },
         { provide: APP_INTERCEPTOR, useClass: TenantInterceptor },
