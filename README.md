@@ -40,8 +40,18 @@ WebSocket, as if on four laptops. The Director changes their access live.
 
 ![All four agents after the Director classified a sentence and shared the briefing with the Liaison: portion markings for those cleared, bars for the Intern](docs/images/room-after.png)
 
-**Try it** (Docker, below; then open http://localhost:3000 and enter the briefing room). Each
-visitor gets a private, throwaway agency, deleted after two hours.
+**Try it** (Docker, below; then open http://localhost:3000). Each visitor gets a private,
+throwaway agency, deleted after two hours. There are three ways in:
+
+- **Play it for me:** a two-minute demo that runs itself, narrated step by step. The Analyst types,
+  the Director lowers their clearance mid-sentence, classifies a phrase and shares the briefing.
+  Nothing is animated: every step is a real API call or a real edit in that agent's editor, and the
+  other panes react because the server tells them to.
+- **Guide me:** the same story, done by you. Each step lights up the panes involved and moves on
+  when the server (or the agent's screen) shows the change happened.
+- **Enter the briefing room** and explore freely:
+
+![The guided demo, mid-way: the Director has just lowered the Analyst's clearance; the panes involved are lit, the others dimmed](docs/images/tour.png)
 
 1. In the Director's copy (top left), select a sentence in *Cover story* and click **S**: it turns
    into a bar in the Intern's copy.
@@ -189,7 +199,7 @@ npm run test:mutation    # Stryker on the policy, tokens, audit chain and canoni
 k6 run load/smoke.js     # against a running stack
 ```
 
-603 tests in all: 79 unit, 518 end-to-end (441 of them the authorization matrix) and 6 in the
+605 tests in all: 79 unit, 518 end-to-end (441 of them the authorization matrix) and 8 in the
 browser.
 
 | Suite | What it proves |
@@ -198,7 +208,7 @@ browser.
 | **Realtime** | Real WebSocket clients: cleared editors sync and are saved and audited; an uncleared member is refused and receives nothing; a reader's edits reach no one; demotion mid-session turns the connection read-only; lowered clearance or a revoked share disconnects; personal channels reach members with no access yet; no edit lands once a demotion has committed; edits refused during a re-check are recovered. |
 | **Word-level classification** | A reader below the marks is refused the full text; their projection shows bars, and the hidden words aren't anywhere in the document bytes they receive; projections follow edits live; classifying above a connected editor's clearance disconnects them before the next keystroke; classifying above your own clearance is refused; marks are saved and audited. A property test checks 500 random documents for leaks. |
 | **Sharing and sections** | Redacted sections carry no heading or text; department and user shares, temporary shares expiring, cross-organization shares refused; classification bounded by clearance; "why can I see this?"; every change audited. |
-| **Browser** (Playwright) | Everything the Intern's page receives, HTTP and every WebSocket frame, is scanned for the hidden text, classified words included; the four-pane room; demotion mid-typing; live redaction; words classified by the Director blacking out mid-sentence; sharing; the surveillance log. |
+| **Browser** (Playwright) | Everything the Intern's page receives, HTTP and every WebSocket frame, is scanned for the hidden text, classified words included; the four-pane room; demotion mid-typing; live redaction; words classified by the Director blacking out mid-sentence; sharing; the surveillance log; both guided tours (the self-playing one must leave every effect it narrates on the panes; the guided one must wait for the visitor and move on when they act). |
 | **Tokens** | `alg: none`, wrong secret, edited payload, expired, wrong audience or issuer, wrong token type, tokens for unknown users or the wrong organization, keys sent as tokens and tokens as keys, revoked and expired keys: all 401. |
 | **Escalation** | Mass assignment, department admins creating or promoting beyond their power or outside their department, self-promotion, API keys requesting human-only scopes or acting beyond them. |
 | **Tenancy** | As the API's own database role: no rows without a tenant, only one tenant's rows with one, writes into another tenant refused, the audit log immune to UPDATE and DELETE. |
