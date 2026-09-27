@@ -27,6 +27,8 @@ jobs:
       - run: npm test
       - name: README permission table matches the policy
         run: npx tsx scripts/policy-table.ts --check
+      - name: Web app (types and build)
+        run: npm --prefix web ci && npm run build:web
 
   e2e:
     name: E2E (shard ${{ matrix.shard }}/2)
@@ -43,6 +45,23 @@ jobs:
       - run: npm ci
       # Testcontainers starts PostgreSQL; each Jest worker gets its own database.
       - run: npx jest --selectProjects e2e --shard=${{ matrix.shard }}/2
+
+  browser:
+    name: Browser tests (Playwright, the demo UI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm }
+      - run: npm ci && npm --prefix web ci
+      - run: npm run build:all
+      - run: npx playwright install --with-deps chromium
+      # Starts PostgreSQL (Testcontainers) and the compiled API in demo mode (test/browser/server.cjs).
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with: { name: playwright-traces, path: test-results }
 
   mutation:
     name: Mutation testing (policy, tokens, audit chain)
