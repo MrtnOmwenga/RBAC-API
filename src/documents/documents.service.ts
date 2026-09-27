@@ -4,6 +4,7 @@ import { authorize } from '../common/http';
 import { findDocument, findProject } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
 import { listFilter } from '../policy/policy';
+import { announceAccessChange, loadDocumentAccess } from '../briefings/access';
 
 type DocumentRow = Awaited<ReturnType<typeof findDocument>>;
 
@@ -32,27 +33,40 @@ export class DocumentsService {
     return view(document);
   }
 
+  /** What the role reaches, plus anything shared with the member or their department. */
   async list(projectId?: string) {
     const { db, principal } = this.tenant;
     const filter = listFilter(principal, 'document:read');
-    if (!filter) throw new ForbiddenException('Not allowed to document:read');
+    const now = new Date();
+    const shared = principal.kind === 'user'
+      ? db.selectFrom('document_grants').select('document_id')
+        .where((eb) => eb.or([
+          eb.and([eb('subject_type', '=', 'user'), eb('subject_id', '=', principal.id)]),
+          ...(principal.departmentId ? [eb.and([eb('subject_type', '=', 'department'), eb('subject_id', '=', principal.departmentId)])] : []),
+        ]))
+        .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', now)]))
+      : null;
+    if (!filter && !shared) throw new ForbiddenException('Not allowed to document:read');
     let query = db.selectFrom('documents').selectAll().orderBy('updated_at', 'desc').limit(100);
-    if (filter.departmentId) query = query.where('department_id', '=', filter.departmentId);
+    query = query.where((eb) => {
+      const byRole = filter ? (filter.departmentId ? eb('department_id', '=', filter.departmentId) : eb.lit(true)) : eb.lit(false);
+      return shared ? eb.or([byRole, eb('id', 'in', shared)]) : byRole;
+    });
     if (projectId) query = query.where('project_id', '=', projectId);
     return (await query.execute()).map(view);
   }
 
   async get(id: string) {
     const { db, principal } = this.tenant;
-    const document = await findDocument(db, id);
-    authorize(principal, 'document:read', resourceOf(document));
+    const { document, access } = await loadDocumentAccess(db, principal, id);
+    if (access === 'none') throw new ForbiddenException('Not allowed to document:read');
     return view(document);
   }
 
   async update(id: string, changes: { title?: string; body?: string }) {
     const { db, principal } = this.tenant;
-    const document = await findDocument(db, id);
-    authorize(principal, 'document:update', resourceOf(document));
+    const { access } = await loadDocumentAccess(db, principal, id);
+    if (access !== 'edit') throw new ForbiddenException('Not allowed to document:update');
     const updated = await db.updateTable('documents').set({ ...changes, updated_at: new Date() }).where('id', '=', id).returningAll().executeTakeFirstOrThrow();
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'document.update', resourceType: 'document', resourceId: id, detail: { fields: Object.keys(changes) } });
     return view(updated);
@@ -64,5 +78,6 @@ export class DocumentsService {
     authorize(principal, 'document:delete', resourceOf(document));
     await db.deleteFrom('documents').where('id', '=', id).execute();
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'document.delete', resourceType: 'document', resourceId: id });
+    await announceAccessChange(db, principal.orgId);
   }
 }

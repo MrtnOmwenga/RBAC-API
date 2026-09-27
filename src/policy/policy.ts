@@ -27,6 +27,7 @@ export const ACTIONS = [
   'document:read',
   'document:update',
   'document:delete',
+  'document:share',
   'api_key:create',
   'api_key:read',
   'api_key:revoke',
@@ -55,6 +56,7 @@ export const POLICY: Record<Action, Partial<Record<Role, Reach>>> = {
   'document:read': { org_admin: 'org', department_admin: 'department', editor: 'department', viewer: 'department', auditor: 'org' },
   'document:update': { org_admin: 'org', department_admin: 'department', editor: 'own' },
   'document:delete': { org_admin: 'org', department_admin: 'department', editor: 'own' },
+  'document:share': { org_admin: 'org', department_admin: 'department', editor: 'own' },
   'api_key:create': { org_admin: 'org' },
   'api_key:read': { org_admin: 'org', auditor: 'org' },
   'api_key:revoke': { org_admin: 'org' },
@@ -67,8 +69,16 @@ export const POLICY: Record<Action, Partial<Record<Role, Reach>>> = {
  */
 export const INTEGRATION_ACTIONS: readonly Action[] = ['project:read', 'document:create', 'document:read', 'document:update'];
 
+/**
+ * Clearance levels, lowest first. A member sees a document section only if their clearance is at
+ * least the section's classification; API keys hold no clearance.
+ */
+export const CLEARANCES = ['unclassified', 'confidential', 'secret', 'top_secret'] as const;
+export type Clearance = number; // an index into CLEARANCES
+export const TOP_CLEARANCE: Clearance = CLEARANCES.length - 1;
+
 export type Principal =
-  | { kind: 'user'; id: string; orgId: string; role: Role; departmentId: string | null }
+  | { kind: 'user'; id: string; orgId: string; role: Role; departmentId: string | null; clearance: Clearance }
   | { kind: 'integration'; id: string; orgId: string; departmentId: string | null; scopes: readonly Action[] };
 
 /** The resource an action touches: the thing itself, or the container a new thing goes into. */
@@ -137,4 +147,58 @@ export function canManageMember(actor: Principal, target: { id: string; role: Ro
   return actor.role === 'department_admin'
     && (target.role === 'editor' || target.role === 'viewer')
     && target.departmentId === actor.departmentId;
+}
+
+// ─── Document sharing and sections ──────────────────────────────────────────────────────────────
+
+export type Access = 'none' | 'read' | 'edit';
+const RANK: Record<Access, number> = { none: 0, read: 1, edit: 2 };
+const higher = (a: Access, b: Access): Access => (RANK[a] >= RANK[b] ? a : b);
+
+/** A share of one document with one member or a whole department, optionally temporary. */
+export interface Grant {
+  subjectType: 'user' | 'department';
+  subjectId: string;
+  relation: 'reader' | 'editor';
+  expiresAt: Date | null;
+}
+
+/**
+ * What a principal may do with a whole document: the most their role gives them, or the most any
+ * live share gives them, whichever is higher. Shares reach across departments (that is their
+ * point) but never across organizations, and only people hold them, never API keys.
+ */
+export function documentAccess(principal: Principal, document: Resource, grants: readonly Grant[], now = new Date()): Access {
+  if (principal.orgId !== document.orgId) return 'none';
+  let access: Access = 'none';
+  if (can(principal, 'document:read', document)) access = 'read';
+  if (can(principal, 'document:update', document)) access = 'edit';
+  if (principal.kind !== 'user') return access;
+  for (const grant of grants) {
+    const live = grant.expiresAt === null || grant.expiresAt > now;
+    const mine = grant.subjectType === 'user' ? grant.subjectId === principal.id : grant.subjectId === principal.departmentId;
+    if (live && mine) access = higher(access, grant.relation === 'editor' ? 'edit' : 'read');
+  }
+  return access;
+}
+
+/** A section is visible only with document access *and* enough clearance; otherwise it's redacted. */
+export function sectionAccess(principal: Principal, documentLevel: Access, classification: Clearance): Access {
+  const clearance = principal.kind === 'user' ? principal.clearance : 0;
+  return clearance >= classification ? documentLevel : 'none';
+}
+
+/**
+ * Changing a section's classification needs edit access and clearance for both the old and the
+ * new level, so nobody can hide what they can't see or declassify what they can't read.
+ */
+export function canClassify(principal: Principal, documentLevel: Access, from: Clearance, to: Clearance): boolean {
+  const clearance = principal.kind === 'user' ? principal.clearance : 0;
+  return documentLevel === 'edit' && clearance >= Math.max(from, to);
+}
+
+/** Only organization admins set clearances: never their own, never above their own. */
+export function canSetClearance(actor: Principal, target: { id: string }, level: Clearance): boolean {
+  return actor.kind === 'user' && actor.role === 'org_admin' && actor.id !== target.id
+    && level >= 0 && level <= actor.clearance;
 }

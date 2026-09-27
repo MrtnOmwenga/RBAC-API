@@ -11,6 +11,8 @@ import { AuditService } from './audit/audit.service';
 import { AuthController, MeController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
 import { AuthenticationGuard, TenantInterceptor } from './auth/authentication';
+import { BriefingsController } from './briefings/briefings.controller';
+import { BriefingsService } from './briefings/briefings.service';
 import { ProblemDetailsFilter } from './common/http';
 import { CONFIG, type Config } from './config/config';
 import { DatabaseModule } from './database/database.module';
@@ -62,10 +64,10 @@ export class AppModule {
       ],
       controllers: [
         AuthController, MeController, DepartmentsController, MembersController, ProjectsController, DocumentsController,
-        ApiKeysController, AuditController, HealthController,
+        ApiKeysController, AuditController, HealthController, BriefingsController,
       ],
       providers: [
-        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService,
+        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService,
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthenticationGuard },
         { provide: APP_INTERCEPTOR, useClass: TenantInterceptor },
