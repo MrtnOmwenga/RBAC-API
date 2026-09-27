@@ -6,6 +6,7 @@ import StarterKit from '@tiptap/starter-kit';
 import { useEffect, useMemo, useState } from 'react';
 import * as Y from 'yjs';
 import type { Access } from './api';
+import { automation } from './automation';
 import { Classified, Redaction } from './marks';
 
 interface Props {
@@ -60,6 +61,13 @@ export function SectionEditor({ sectionId, view, projectionLevel, access, cleara
       ...(view === 'full' ? [CollaborationCaret.configure({ provider, user })] : []),
     ],
   }, [provider]);
+  // Register the full text with the pane's automation, for the guided tour.
+  useEffect(() => {
+    if (!editor || view !== 'full') return;
+    const registry = automation().editors;
+    registry.set(sectionId, editor);
+    return () => { if (registry.get(sectionId) === editor) registry.delete(sectionId); };
+  }, [editor, sectionId, view]);
   const writable = view === 'full' && live === 'edit';
   useEffect(() => { editor?.setEditable(writable); }, [editor, writable]);
   const selection = useEditorState({ editor, selector: ({ editor: e }) => (e ? !e.state.selection.empty : false) });

@@ -132,3 +132,38 @@ a { color: #e9ebef; }
 .classify { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; padding: 0.25rem 0; font-family: var(--sans); font-size: 0.72rem; color: #555; }
 .classify button { border: 1px solid #b9b1a0; background: #fff; border-radius: 3px; padding: 0.05rem 0.4rem; font-size: 0.72rem; cursor: pointer; }
 .classify button:disabled { opacity: 0.45; cursor: default; }
+
+/* Landing: three ways in */
+.choices { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin-top: 1.5rem; }
+.choices button { display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem; min-height: 44px; margin-top: 0; padding: 0.75rem 1.2rem; text-align: left; font-weight: 700; }
+.choices button small { font-weight: 400; opacity: 0.8; }
+
+/* The guided tour: a caption card, the panes it talks about lit, the rest dimmed */
+.room.touring .grid { margin-bottom: 11rem; }
+.pane-frame { transition: opacity 0.4s, outline-color 0.4s; outline: 3px solid transparent; outline-offset: -3px; }
+.pane-frame.tour-dim { opacity: 0.35; }
+.pane-frame.tour-focus { outline-color: #f1c40f; }
+.desk.tour-focus { outline: 3px solid #f1c40f; outline-offset: 2px; }
+.tour {
+  position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%); z-index: 10;
+  width: min(760px, calc(100vw - 2rem)); max-height: 45vh; overflow: auto;
+  background: #f4efe6; color: #16181d; border-radius: 10px; padding: 1rem 1.25rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.tour h2 { margin: 0.15rem 0 0.35rem; font-size: 1.3rem; }
+.tour p { margin: 0 0 0.5rem; line-height: 1.5; }
+.tour-step { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #8a6d00; }
+.tour-waiting { font-size: 0.85rem; color: #555; font-style: italic; }
+.tour-progress { display: flex; gap: 4px; margin: 0.5rem 0; }
+.tour-progress span { flex: 1; height: 4px; border-radius: 2px; background: #d8d1c4; }
+.tour-progress .done { background: #16181d; }
+.tour-progress .now { background: #c9a227; }
+.tour-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.tour .ghost { color: #16181d; border-color: #9a9387; min-height: 40px; }
+.tour .primary { margin-top: 0; }
+.tour .error { color: #a93226; }
+@media (prefers-reduced-motion: reduce) { .pane-frame { transition: none; } }
+@media (max-width: 900px) {
+  .room.touring .grid { margin-bottom: 0; }
+  .tour { max-height: 38vh; }
+}
