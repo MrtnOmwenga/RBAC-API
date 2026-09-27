@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import {
   ACTIONS, type Action, can, canAssignRole, canManageMember, DEPARTMENT_ROLES, hasDepartment, INTEGRATION_ACTIONS,
-  listFilter, POLICY, type Principal, documentAccess, sectionAccess, canClassify, canSetClearance, type Grant, type Access, reachOf, type Resource, type Role, ROLES, TOP_CLEARANCE,
+  listFilter, POLICY, type Principal, documentAccess, sectionAccess, canClassify, canSetClearance, type Grant, type Access, CLEARANCES, reachOf, type Resource, type Role, ROLES, TOP_CLEARANCE,
 } from './policy';
 
 /*
@@ -234,6 +234,7 @@ describe('sharing, clearance and sections', () => {
     expect(documentAccess(viewer, elsewhere, [share('department', 'dept-x', 'editor')], NOW)).toBe('edit');
     expect(documentAccess(viewer, elsewhere, [share('user', 'user-2', 'editor'), share('department', 'dept-y', 'editor')], NOW)).toBe('none');
     expect(documentAccess(viewer, elsewhere, [{ ...share('user', 'user-1', 'editor'), expiresAt: new Date('2026-01-01T00:00:01Z') }], NOW)).toBe('edit');
+    expect(documentAccess(viewer, elsewhere, [{ ...share('user', 'user-1', 'editor'), expiresAt: NOW }], NOW)).toBe('none'); // expired at this instant
   });
 
   test('a section is redacted exactly when clearance is below its classification, and never exceeds document access', () => {
@@ -253,6 +254,11 @@ describe('sharing, clearance and sections', () => {
     const key: Principal = { kind: 'integration', id: 'k', orgId: 'org-a', departmentId: null, scopes: [...ACTIONS] };
     expect(canClassify(key, 'edit', 0, 0)).toBe(true);
     expect(canClassify(key, 'edit', 0, 1)).toBe(false);
+  });
+
+  test('clearance levels run from unclassified (0) to top secret', () => {
+    expect(TOP_CLEARANCE).toBe(3);
+    expect(CLEARANCES[TOP_CLEARANCE]).toBe('top_secret');
   });
 
   test('only organization admins set clearance: not their own, never above their own', () => {
