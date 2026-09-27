@@ -25,6 +25,8 @@ import { type Access, type Principal, sectionAccess } from '../policy/policy';
  *   the user isn't cleared for is never synced to them, so hidden text never reaches the browser.
  * - `briefing:<id>` rooms carry no text; they tell every open reader when the briefing's shape or
  *   their access changed, so the page can re-fetch it.
+ * - `member:<id>` rooms are personal: only that member may join. They ping on any access change in
+ *   the organization, so even someone with no access yet learns when they've been given some.
  * - Any permission change is announced with pg_notify (see briefings/access.ts). Each server
  *   re-checks its open connections for that organization: lost access sends an `access: none`
  *   message and closes the connection, a demotion makes it read-only mid-edit, a promotion makes it writable.
@@ -33,7 +35,7 @@ import { type Access, type Principal, sectionAccess } from '../policy/policy';
  * credential for a cross-site page to ride on.
  */
 
-type Target = { kind: 'section' | 'briefing'; id: string };
+type Target = { kind: 'section' | 'briefing' | 'member'; id: string };
 interface Context {
   userId: string;
   orgId: string;
@@ -42,7 +44,7 @@ interface Context {
 }
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const ROOM = new RegExp(`^(section|briefing):(${UUID})$`, 'i');
+const ROOM = new RegExp(`^(section|briefing|member):(${UUID})$`, 'i');
 
 export function parseRoom(name: string): Target | null {
   const match = ROOM.exec(name);
@@ -148,13 +150,14 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
       return principal ? this.accessFor(trx, principal, target) : 'none';
     });
     if (access === 'none') throw new Error('forbidden');
-    connectionConfig.readOnly = target.kind === 'briefing' || access !== 'edit';
+    connectionConfig.readOnly = target.kind !== 'section' || access !== 'edit';
     this.orgOf.set(room, claims.orgId);
     return { userId: claims.userId, orgId: claims.orgId, target, access };
   }
 
   private async accessFor(trx: Transaction<Database>, principal: Principal, target: Target): Promise<Access> {
     try {
+      if (target.kind === 'member') return principal.id === target.id ? 'read' : 'none';
       if (target.kind === 'briefing') return (await loadDocumentAccess(trx, principal, target.id)).access;
       const section = await trx.selectFrom('document_sections').select(['document_id', 'classification']).where('id', '=', target.id).executeTakeFirst();
       if (!section) return 'none';
@@ -222,7 +225,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
           connection.close({ code: 4403, reason: 'Access revoked' });
           continue;
         }
-        if (context.target.kind === 'briefing') {
+        if (context.target.kind !== 'section') {
           connection.sendStateless(JSON.stringify({ type: 'refresh' }));
         } else {
           connection.readOnly = access !== 'edit';
