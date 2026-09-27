@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, types, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - name: README permission table matches the policy
+        run: npx tsx scripts/policy-table.ts --check
+
+  e2e:
+    name: E2E (shard ${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      # Testcontainers starts PostgreSQL; each Jest worker gets its own database.
+      - run: npx jest --selectProjects e2e --shard=${{ matrix.shard }}/2
+
+  mutation:
+    name: Mutation testing (policy, tokens, audit chain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm run test:mutation
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with: { name: mutation-report, path: reports/mutation }
+
+  security:
+    name: Secrets, dependencies, image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm }
+      - run: npm audit --omit=dev --audit-level=high
+      - run: docker build -t rbac-api:ci .
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: rbac-api:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+  load:
+    name: Load test (k6, latency budget)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: checks
+    steps:
+      - uses: actions/checkout@v7
+      - name: Generate secrets for the stack
+        run: |
+          echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
+          echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env
+          echo "APP_DB_PASSWORD=$(openssl rand -hex 16)" >> .env
+          echo "RATE_LIMIT_PER_MINUTE=1000000" >> .env
+          echo "LOG_LEVEL=warn" >> .env
+      - name: Start the stack
+        run: docker compose up --build -d --wait api
+      - name: Run k6
+        run: docker run --rm -i --network host grafana/k6 run - < load/smoke.js
+      - if: failure()
+        run: docker compose logs

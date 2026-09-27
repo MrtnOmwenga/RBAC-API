@@ -1,0 +1,9 @@
+node_modules
+dist
+reports
+coverage
+.stryker-tmp
+.git
+.env
+test
+load
