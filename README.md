@@ -34,8 +34,22 @@ WebSocket, as if on four laptops. The Director changes their access live.
 | "Why can I see this?" | An endpoint that lists every reason for access (role, shares) and what clearance hides. |
 | Surveillance log, "chain verified" | The hash-chained audit log, with its verification endpoint. |
 
-Run it locally with Docker (below) and open http://localhost:3000. Each visitor gets a private,
-throwaway agency, deleted after two hours.
+| The Intern: bars mid-sentence, and why | The Director's desk: every control is an API call |
+|---|---|
+| ![The Intern's pane: a whole sentence and a company name barred inside the one section they can read, three sections fully redacted, and "Why can I see this?" listing their role and what their clearance hides](docs/images/intern.png) | ![The Director's controls for clearance, role and sharing, above the surveillance log with "chain verified"](docs/images/director-desk.png) |
+
+![All four agents after the Director classified a sentence and shared the briefing with the Liaison: portion markings for those cleared, bars for the Intern](docs/images/room-after.png)
+
+**Try it** (Docker, below; then open http://localhost:3000 and enter the briefing room). Each
+visitor gets a private, throwaway agency, deleted after two hours.
+
+1. In the Director's copy (top left), select a sentence in *Cover story* and click **S**: it turns
+   into a bar in the Intern's copy.
+2. Click into the Analyst's *Contacts* section and type; meanwhile, set their clearance to
+   *unclassified* on the Director's desk. The section blacks out under their cursor.
+3. Set the Analyst's role to *viewer*: their editor locks.
+4. Share the briefing with the Liaison: the NO ACCESS stamp lifts.
+5. Click **Why can I see this?** in any pane, and watch the surveillance log fill up.
 
 ## Highlights
 
@@ -239,7 +253,9 @@ curl -s localhost:3000/audit-events/verify -H "authorization: Bearer $TOKEN"
 ```
 
 For development: `npm install`, `cp .env.example .env`, `npm run migrate:dev` (with
-`MIGRATION_DATABASE_URL` set), then `npm run start:dev`.
+`MIGRATION_DATABASE_URL` set), then `npm run start:dev` (the API on :3000). For the demo UI with hot
+reload, `npm --prefix web install` and `npm --prefix web run dev` (Vite on :5173, proxying the API
+and the WebSocket to :3000); set `DEMO_MODE=true` for the API.
 
 <details>
 <summary>API</summary>
