@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
-import { signAccessToken } from '../src/auth/tokens';
+import { API_KEY_FORMAT, signAccessToken } from '../src/auth/tokens';
 import { createTestApp, TEST_JWT_SECRET, type TestApp } from './support/app';
 import { createKey, createOrg, createUser, type Actor } from './support/world';
 
@@ -75,5 +75,8 @@ test('credentials never appear in responses or list endpoints', async () => {
   const res = await t.http().get('/api-keys').set(admin.headers).expect(200);
   const body = JSON.stringify(res.body);
   expect(body).not.toMatch(/secret|hash/i);
-  expect(body).not.toContain(key.headers['x-api-key']!.split('_')[2]);
+  // The secret is base64url, which may itself contain "_": take it with the key format, not split().
+  const secret = API_KEY_FORMAT.exec(key.headers['x-api-key']!)![2]!;
+  expect(secret).toHaveLength(43);
+  expect(body).not.toContain(secret);
 });
