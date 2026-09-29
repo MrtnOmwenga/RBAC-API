@@ -16,9 +16,10 @@ updates:
         versions: ['>=12']
       - dependency-name: kysely
         versions: ['>=0.29']
-      # typescript-eslint and ts-jest don't support TypeScript 7 yet
+      # A TypeScript major version is a migration, not a bump: 6 and 7 break the lint, types and
+      # tests here (typescript-eslint and ts-jest lag behind). It gets its own planned PR.
       - dependency-name: typescript
-        versions: ['>=7']
+        update-types: ['version-update:semver-major']
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly }
@@ -26,7 +27,7 @@ updates:
       web: { patterns: ['*'] }
     ignore:
       - dependency-name: typescript
-        versions: ['>=7']
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
