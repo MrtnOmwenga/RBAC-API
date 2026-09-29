@@ -1,8 +1,11 @@
 name: Release
 
-# Every push to the default branch publishes an image for amd64 and arm64 (the production host is
-# an ARM VM; see MrtnOmwenga/lighthouse's deploy/), tagged <unix time>-<short sha> for Flux to pick
-# up, and signed with cosign (keyless, through GitHub's OIDC identity).
+# Every push to master publishes an image for amd64 and arm64, tagged <unix time>-<short sha> (for
+# Flux, on the Kubernetes path in MrtnOmwenga/lighthouse's deploy/) and signed with cosign (keyless,
+# through GitHub's OIDC identity). The deploy job then ships it to Cloud Run, where the live demo
+# runs (lighthouse's deploy/cloudrun): no stored cloud credentials, only GitHub's OIDC token
+# exchanged through Workload Identity Federation, which Google accepts only from this repository's
+# master branch.
 on:
   push:
     branches: [master]
@@ -17,6 +20,10 @@ jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      image: ${{ steps.tags.outputs.image }}
+      tag: ${{ steps.tags.outputs.tag }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4 # native Node modules are built for arm64 under emulation
@@ -47,3 +54,43 @@ jobs:
       - uses: sigstore/cosign-installer@v4.1.2
       - name: Sign
         run: cosign sign --yes "${{ steps.tags.outputs.image }}@${{ steps.build.outputs.digest }}"
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+    concurrency: { group: deploy-cloud-run, cancel-in-progress: false }
+    environment: { name: production, url: "https://redacted.martinomwenga.com" }
+    env:
+      SERVICE: redacted
+      MIGRATE_JOB: redacted-migrate
+      REGION: ${{ vars.GCP_REGION }}
+      TARGET: ${{ vars.GCP_REGISTRY }}/redacted:${{ needs.image.outputs.tag }}
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - uses: imjasonh/setup-crane@v0.7
+      - name: Copy the signed image to Artifact Registry (amd64, which is what Cloud Run runs)
+        id: copy
+        run: |
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          crane auth login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+          crane copy --platform linux/amd64 "${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}" "$TARGET"
+          echo "ref=${TARGET%:*}@$(crane digest "$TARGET")" >> "$GITHUB_OUTPUT"
+      - name: Migrate
+        run: |
+          gcloud run jobs update "$MIGRATE_JOB" --region "$REGION" --image "${{ steps.copy.outputs.ref }}" --quiet
+          gcloud run jobs execute "$MIGRATE_JOB" --region "$REGION" --wait --quiet
+      - name: Deploy
+        run: gcloud run services update "$SERVICE" --region "$REGION" --image "${{ steps.copy.outputs.ref }}" --quiet
+      - name: Smoke test through the edge
+        run: |
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://redacted.martinomwenga.com/health/ready) && [ "$code" = 200 ] && exit 0
+            sleep 3
+          done
+          echo "https://redacted.martinomwenga.com/health/ready answered $code"; exit 1
