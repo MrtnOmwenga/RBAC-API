@@ -14,7 +14,9 @@ const shareBody = z.strictObject({
   subjectId: z.uuid(),
   relation: z.enum(['reader', 'editor']),
   expiresInMinutes: z.number().int().min(1).max(60 * 24 * 30).nullable().default(null),
-});
+  // For access that should end sooner than a minute from now.
+  expiresInSeconds: z.number().int().min(5).max(3600).nullable().default(null),
+}).refine((b) => b.expiresInMinutes === null || b.expiresInSeconds === null, 'Give the share one end: minutes or seconds');
 const explainQuery = z.strictObject({ userId: z.uuid().optional() });
 
 @Controller()

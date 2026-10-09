@@ -15,6 +15,7 @@ export interface NewShare {
   subjectId: string;
   relation: 'reader' | 'editor';
   expiresInMinutes: number | null;
+  expiresInSeconds: number | null;
 }
 
 @Injectable()
@@ -112,7 +113,8 @@ export class BriefingsService {
     if (principal.kind !== 'user') throw new ForbiddenException('Not allowed to document:share');
     if (input.subjectType === 'user') await findMember(db, input.subjectId);
     else await findDepartment(db, input.subjectId);
-    const expiresAt = input.expiresInMinutes ? new Date(Date.now() + input.expiresInMinutes * 60_000) : null;
+    const lasts = input.expiresInSeconds ?? (input.expiresInMinutes === null ? null : input.expiresInMinutes * 60);
+    const expiresAt = lasts === null ? null : new Date(Date.now() + lasts * 1000);
     const grant = await db.insertInto('document_grants').values({
       org_id: principal.orgId, document_id: documentId, subject_type: input.subjectType, subject_id: input.subjectId,
       relation: input.relation, granted_by: principal.id, expires_at: expiresAt,

@@ -34,6 +34,10 @@ export interface Step {
   run?: (ctx: TourContext) => Promise<void>;
   /** Play: whether the effect the caption describes is on screen yet. The hold starts from then. */
   shown?: (ctx: TourContext) => boolean;
+  /** Play: how long to wait for `shown` before moving on regardless (ms; 20 s unless given). */
+  patience?: number;
+  /** Play: requests made in front of the visitor, each reported as one line under the caption. */
+  evidence?: (ctx: TourContext) => Promise<string[]>;
   hold?: number;
   /** Guide: whether the visitor has done it yet (polled). */
   done?: (ctx: TourContext) => Promise<boolean>;
@@ -152,5 +156,130 @@ export const GUIDE: Step[] = [
     done: async (ctx) => Boolean(ctx.frame('intern')?.contentDocument?.querySelector('.why')),
   },
 ];
+
+/** One request, as a line of evidence: what was asked, as whom, and what the server answered. */
+async function line(token: string, method: string, path: string, body: unknown, say: (status: number, answer: unknown) => string): Promise<string> {
+  const res = await fetch(path, {
+    method, headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const answer: unknown = await res.json().catch(() => null);
+  return `${method} ${path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, '…')} → ${res.status} ${say(res.status, answer)}`;
+}
+const refusal = (_: number, answer: unknown) => String((answer as { detail?: string } | null)?.detail ?? '');
+const count = (noun: string) => (_: number, answer: unknown) => `${Array.isArray(answer) ? answer.length : 0} ${noun}`;
+
+// The auditor exists only once their chapter has created them.
+let auditor: { id: string; token: string } | null = null;
+
+/*
+ * Chapters: shorter tours, each about one thing the first tour has no time for. They play
+ * themselves like "Play it for me", against the same agency, with the same rule: every effect is a
+ * real request, and where the effect isn't visible in a pane, the request and the server's answer
+ * are shown under the caption.
+ */
+export const CHAPTERS = {
+  expiry: {
+    name: 'A share that runs out',
+    steps: [
+      {
+        title: 'A share with an end',
+        body: 'The Director shares the briefing with the Liaison for twenty seconds. Access with an end date is ordinary: a contractor for a week, a reviewer for a day. Here it is short enough to watch.',
+        focus: ['desk', 'liaison'],
+        run: async (ctx) => {
+          const liaison = ctx.character('liaison').id;
+          const shares = await ctx.asDirector<{ id: string; subjectId: string }[]>(`/documents/${ctx.session.briefingId}/shares`);
+          for (const s of shares.filter((x) => x.subjectId === liaison)) await ctx.asDirector(`/documents/${ctx.session.briefingId}/shares/${s.id}`, { method: 'DELETE' });
+          await ctx.asDirector(`/documents/${ctx.session.briefingId}/shares`, {
+            method: 'POST', body: { subjectType: 'user', subjectId: liaison, relation: 'reader', expiresInSeconds: 20 },
+          });
+        },
+        shown: (ctx) => sees(ctx, 'liaison', 'Exfiltration'),
+        hold: 5000,
+      },
+      {
+        title: 'Now nobody does anything',
+        body: 'No click, no request. When the twenty seconds are up the share stops counting. The server checks its open connections every few seconds for exactly this, closes the Liaison\'s, and their page goes back to "No access". Keep watching the bottom right.',
+        focus: ['liaison'],
+        shown: (ctx) => !sees(ctx, 'liaison', 'Exfiltration'),
+        patience: 60_000,
+        hold: 6000,
+      },
+      {
+        title: 'Ended, and still on the record',
+        body: 'The surveillance log keeps the share and the time it was due to end. Had the Liaison asked the API directly, they would have been refused from the instant it expired; the connection that was already open followed within seconds.',
+        focus: ['desk'],
+        hold: 7000,
+      },
+    ] as Step[],
+  },
+  auditor: {
+    name: 'The auditor',
+    steps: [
+      {
+        title: 'A new colleague',
+        body: 'The Director adds an auditor: someone whose job is to check what happened, and who must not be able to change it. They have no pane here, so their requests are shown below, with the server\'s answers.',
+        focus: ['desk'],
+        evidence: async (ctx) => {
+          const director = ctx.character('director').accessToken;
+          const email = `auditor-${crypto.randomUUID()}@demo.invalid`;
+          const password = crypto.randomUUID() + crypto.randomUUID();
+          let id = '';
+          const made = await line(director, 'POST', '/members', { email, name: 'A. Hale', password, role: 'auditor', departmentId: null }, (_, a) => {
+            id = (a as { id: string }).id;
+            return 'A. Hale, auditor';
+          });
+          const login = await fetch('/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) });
+          auditor = { id, token: ((await login.json()) as { accessToken: string }).accessToken };
+          return [made, `POST /auth/login → ${login.status} signed in as the auditor`];
+        },
+        hold: 7000,
+      },
+      {
+        title: 'Reads the whole record',
+        body: 'The auditor may read every member, every document\'s existence and the whole log, across all divisions. Reading the record is not clearance, though: the briefing comes back to them with its classified sections redacted, as it does to the Intern.',
+        focus: ['desk'],
+        evidence: async (ctx) => {
+          const token = auditor!.token;
+          return [
+            await line(token, 'GET', '/members', undefined, count('members, in every division')),
+            await line(token, 'GET', '/audit-events', undefined, count('events')),
+            await line(token, 'GET', '/audit-events/verify', undefined, (_, a) => ((a as { ok: boolean }).ok ? 'the chain verifies' : 'the chain is broken')),
+            await line(token, 'GET', `/documents/${ctx.session.briefingId}/briefing`, undefined, (_, a) => {
+              const sections = (a as { sections: { view: string }[] }).sections;
+              return `${sections.filter((s) => s.view === 'none').length} of ${sections.length} sections redacted`;
+            }),
+          ];
+        },
+        hold: 9000,
+      },
+      {
+        title: 'Changes nothing',
+        body: 'Three things an auditor might be tempted, or tricked, into doing: raising a clearance, sharing the briefing, deleting it. Each is refused by the same table that allowed the reads.',
+        focus: ['desk'],
+        evidence: async (ctx) => {
+          const token = auditor!.token;
+          const doc = ctx.session.briefingId;
+          return [
+            await line(token, 'PATCH', `/members/${ctx.character('intern').id}`, { clearance: 3 }, refusal),
+            await line(token, 'POST', `/documents/${doc}/shares`, { subjectType: 'user', subjectId: auditor!.id, relation: 'editor' }, refusal),
+            await line(token, 'DELETE', `/documents/${doc}`, undefined, refusal),
+          ];
+        },
+        hold: 9000,
+      },
+      {
+        title: 'And the attempts are on the record',
+        body: 'Each refusal was written to the log in a transaction of its own, because the refused request rolled back. The auditor\'s own attempts are now evidence the next auditor can read.',
+        focus: ['desk'],
+        evidence: async (ctx) => [
+          await line(ctx.character('director').accessToken, 'GET', `/audit-events?action=access.denied&actorId=${auditor!.id}`, undefined, count('refusals recorded for the auditor')),
+        ],
+        hold: 8000,
+      },
+    ] as Step[],
+  },
+} as const;
+export type Chapter = keyof typeof CHAPTERS;
 
 export { sleep };

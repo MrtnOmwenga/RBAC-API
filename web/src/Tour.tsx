@@ -2,20 +2,25 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import type { PaneAutomation } from './automation';
 import type { Session } from './session';
-import { GUIDE, type Key, loadSections, PLAY, sleep, type Step, type TourContext } from './tour';
+import { type Chapter, CHAPTERS, GUIDE, type Key, loadSections, PLAY, sleep, type Step, type TourContext } from './tour';
 
-export type TourMode = 'play' | 'guide';
+export type TourMode = 'play' | 'guide' | Chapter;
 
 /** The tour's caption card, and the highlighting of the panes it talks about. */
-export function Tour({ session, mode, frames, onExit, onFocus }: {
+export function Tour({ session, mode, frames, onExit, onFocus, onChapter }: {
   session: Session;
   mode: TourMode;
   frames: Partial<Record<Key, HTMLIFrameElement | null>>;
   onExit: () => void;
   /** The pane a step is about, other than the Director's: a narrow screen brings it into view. */
   onFocus: (key: Key) => void;
+  /** Starts another tour in this room, without a new agency. */
+  onChapter: (chapter: Chapter) => void;
 }) {
-  const steps = mode === 'play' ? PLAY : GUIDE;
+  const steps: readonly Step[] = mode === 'play' ? PLAY : mode === 'guide' ? GUIDE : CHAPTERS[mode].steps;
+  const playing = mode !== 'guide';
+  const chapter = mode !== 'play' && mode !== 'guide' ? CHAPTERS[mode] : null;
+  const [evidence, setEvidence] = useState<string[]>([]);
   const [index, setIndex] = useState(0);
   const [finished, setFinished] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,12 +81,17 @@ export function Tour({ session, mode, frames, onExit, onFocus }: {
     (async () => {
       try {
         const c = await ctx;
-        if (mode === 'play') {
+        if (playing) {
           while (pausedRef.current && !cancelled) await sleep(200);
+          setEvidence([]);
           await step.run?.(c);
+          if (step.evidence) {
+            const lines = await step.evidence(c);
+            if (!cancelled) setEvidence(lines);
+          }
           // The caption stays until its effect is on screen, however slow the connection: the hold
           // is time to look at the effect, not time for it to arrive.
-          const patience = Date.now() + 20_000;
+          const patience = Date.now() + (step.patience ?? 20_000);
           while (!cancelled && step.shown && !step.shown(c) && Date.now() < patience) await sleep(150);
           const until = Date.now() + (step.hold ?? 5000);
           while (!cancelled && (Date.now() < until || pausedRef.current)) await sleep(200);
@@ -97,39 +107,43 @@ export function Tour({ session, mode, frames, onExit, onFocus }: {
       }
     })();
     return () => { cancelled = true; };
-  }, [index, step, finished, ctx, mode, steps.length]);
+  }, [index, step, finished, ctx, playing, steps.length]);
 
-  const restart = (next: TourMode) => {
+  const restart = (next: 'play' | 'guide') => {
     sessionStorage.clear();
     location.search = `?tour=${next}`;
   };
 
   return (
-    <aside className="tour" role="region" aria-label={mode === 'play' ? 'Guided demo' : 'Guided tour'} aria-live="polite">
+    <aside className="tour" role="region" aria-label={playing ? 'Guided demo' : 'Guided tour'} aria-live="polite">
       {finished ? (
         <>
-          <p className="tour-step">{mode === 'play' ? 'That\'s the tour' : 'You did it'}</p>
-          <h2>{mode === 'play' ? 'Your turn' : 'That\'s everything'}</h2>
+          <p className="tour-step">{chapter ? chapter.name : mode === 'play' ? 'That\'s the tour' : 'You did it'}</p>
+          <h2>{chapter ? 'That\'s the chapter' : mode === 'play' ? 'Your turn' : 'That\'s everything'}</h2>
           <p>
-            {mode === 'play'
-              ? 'Everything you just watched was real: API calls and edits, checked by the server. Try it yourself, step by step, or explore freely.'
+            {playing
+              ? 'Everything you just watched was real: API calls and edits, checked by the server. Try it yourself, step by step, watch another chapter, or explore freely.'
               : 'Every change you made was checked by the server and recorded in the Director\'s surveillance log. Keep exploring: nothing here is scripted.'}
           </p>
           <div className="tour-actions">
             {mode === 'play' && <button type="button" className="primary" onClick={() => restart('guide')}>Guide me through it</button>}
+            {(Object.keys(CHAPTERS) as Chapter[]).filter((key) => key !== mode).map((key) => (
+              <button key={key} type="button" className="ghost" onClick={() => onChapter(key)}>Chapter: {CHAPTERS[key].name}</button>
+            ))}
             <button type="button" className="ghost" onClick={onExit}>Explore freely</button>
           </div>
         </>
       ) : step && (
         <>
-          <p className="tour-step">{mode === 'play' ? 'Playing' : 'Your move'} · step {index + 1} of {steps.length}</p>
+          <p className="tour-step">{chapter ? chapter.name : playing ? 'Playing' : 'Your move'} · step {index + 1} of {steps.length}</p>
           <h2>{step.title}</h2>
           <p>{step.body}</p>
+          {evidence.length > 0 && <ul className="tour-evidence" aria-label="Requests and the server's answers">{evidence.map((e) => <li key={e}>{e}</li>)}</ul>}
           {mode === 'guide' && <p className="tour-waiting">Waiting for you… it moves on by itself when it sees the change.</p>}
           {error && <p className="error" role="alert">{error}</p>}
           <div className="tour-progress" aria-hidden="true">{steps.map((s, i) => <span key={s.title} className={i < index ? 'done' : i === index ? 'now' : ''} />)}</div>
           <div className="tour-actions">
-            {mode === 'play' && <button type="button" className="ghost" onClick={() => setPaused(!paused)}>{paused ? 'Resume' : 'Pause'}</button>}
+            {playing && <button type="button" className="ghost" onClick={() => setPaused(!paused)}>{paused ? 'Resume' : 'Pause'}</button>}
             {mode === 'guide' && <button type="button" className="ghost" onClick={() => (index + 1 < steps.length ? setIndex(index + 1) : setFinished(true))}>Skip this step</button>}
             <button type="button" className="ghost" onClick={onExit}>End the tour</button>
           </div>

@@ -3,7 +3,7 @@ import { api } from './api';
 import type { Character, Session } from './session';
 
 interface Member { id: string; role: string; clearance: number; departmentId: string | null }
-interface Share { id: string; subjectType: string; subjectId: string; relation: 'reader' | 'editor' }
+interface Share { id: string; subjectType: string; subjectId: string; relation: 'reader' | 'editor'; expiresAt: string | null }
 interface AuditEvent { seq: number; action: string; at: string; detail: Record<string, unknown> }
 interface ChainCheck { ok: boolean; events: number; brokenAt?: number }
 
@@ -13,7 +13,7 @@ const DESCRIBE: Record<string, (d: Record<string, unknown>) => string> = {
     const to = d.to as Record<string, unknown>;
     return from.role !== to.role ? `role ${String(from.role)} → ${String(to.role)}` : `clearance ${String(from.clearance)} → ${String(to.clearance)}`;
   },
-  'document.share': (d) => `shared as ${String(d.relation)}`,
+  'document.share': (d) => `shared as ${String(d.relation)}${typeof d.expiresAt === 'string' ? ` until ${new Date(d.expiresAt).toLocaleTimeString()}` : ''}`,
   'document.unshare': () => 'share revoked',
   'section.edit': () => 'section edited',
   'organization.create': () => 'agency created',
@@ -57,7 +57,8 @@ export function DirectorControls({ session, me, version, onChange }: { session: 
     }
   };
   const byKey = (key: string) => session.characters.find((c) => c.key === key)!;
-  const shareOf = (c: Character) => shares.find((s) => s.subjectType === 'user' && s.subjectId === c.id);
+  // A share that has run out is still listed by the API, with its end; here it counts as no share.
+  const shareOf = (c: Character) => shares.find((s) => s.subjectType === 'user' && s.subjectId === c.id && (s.expiresAt === null || new Date(s.expiresAt) > new Date()));
   const setShare = (c: Character, relation: string) => {
     const current = shareOf(c);
     if (relation === 'none') return current ? act(api(token, `/documents/${doc}/shares/${current.id}`, { method: 'DELETE' })) : Promise.resolve();
