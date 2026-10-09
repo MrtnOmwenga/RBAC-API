@@ -38,6 +38,16 @@ parts:
     code: [web/src/SectionEditor.tsx, web/src/SectionBoundary.tsx]
     handbook: redacted/06-live-collaboration
 
+  - id: audit
+    lane: server
+    name: Audit log
+    what: Records who did what, in the same transaction as the change itself.
+    detail: >-
+      Each row carries a hash of the row before it, so a deleted or edited row breaks the chain.
+      The head of the chain is signed, so a copy of the log can be checked away from the server.
+    code: [src/audit/audit.service.ts, src/audit/chain.ts, src/audit/checkpoint.ts]
+    handbook: redacted/04-audit-log
+
   - id: api
     lane: server
     name: REST API
@@ -80,16 +90,6 @@ parts:
       length is rounded so it doesn't give away the length of the word behind it.
     code: [src/realtime/projection.ts]
     handbook: redacted/05-redaction
-
-  - id: audit
-    lane: server
-    name: Audit log
-    what: Records who did what, in the same transaction as the change itself.
-    detail: >-
-      Each row carries a hash of the row before it, so a deleted or edited row breaks the chain.
-      The head of the chain is signed, so a copy of the log can be checked away from the server.
-    code: [src/audit/audit.service.ts, src/audit/chain.ts, src/audit/checkpoint.ts]
-    handbook: redacted/04-audit-log
 
   - id: tables
     lane: database
