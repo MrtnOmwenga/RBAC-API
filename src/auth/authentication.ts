@@ -1,11 +1,12 @@
 import {
-  type CallHandler, type CanActivate, type ExecutionContext, Inject, Injectable, InternalServerErrorException, Logger,
+  type CallHandler, type CanActivate, type ExecutionContext, ForbiddenException, Inject, Injectable, InternalServerErrorException, Logger,
   type NestInterceptor, UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { type Kysely, sql, type Transaction } from 'kysely';
 import { from, lastValueFrom, type Observable } from 'rxjs';
+import { actorOf, AuditService } from '../audit/audit.service';
 import { CONFIG, type Config } from '../config/config';
 import { digestsEqual, sha256 } from '../common/crypto';
 import { ANY_PRINCIPAL, IS_PUBLIC, REQUIRES } from '../common/http';
@@ -23,6 +24,7 @@ export interface AuthenticatedRequest extends Request {
 
 const INVALID = 'Missing or invalid credentials';
 const LAST_USED_PRECISION_MS = 60_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Global guard: checks the credential cryptographically (JWT signature, or API key secret against
@@ -79,6 +81,9 @@ export class AuthenticationGuard implements CanActivate {
  * the service, which has the resource; but if the handler finishes and the policy was never asked
  * about that action, the request fails and its transaction rolls back. Forgetting the check is a
  * 500 in the first test that touches the route, not a hole.
+ *
+ * A refusal (403) is itself recorded. The request's own transaction has rolled back by then, so
+ * the event is written in one of its own: someone trying doors they may not open leaves a trace.
  */
 @Injectable()
 export class TenantInterceptor implements NestInterceptor {
@@ -88,16 +93,20 @@ export class TenantInterceptor implements NestInterceptor {
     @Inject(DB) private readonly db: Kysely<Database>,
     private readonly tenant: TenantContext,
     private readonly reflector: Reflector,
+    private readonly audit: AuditService,
   ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const { credential } = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const { credential } = req;
     if (!credential) return next.handle();
+    let who: Principal | undefined;
     const required = this.reflector.get<Action | typeof ANY_PRINCIPAL | undefined>(REQUIRES, context.getHandler());
     const route = `${context.getClass().name}.${context.getHandler().name}`;
     return from(withTenant(this.db, credential.orgId, async (trx) => {
       const principal = await loadPrincipal(trx, credential);
       if (!principal) throw new UnauthorizedException(INVALID);
+      who = principal;
       return this.tenant.run({ trx, principal }, async () => {
         const result = await lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined });
         if (!required) {
@@ -110,7 +119,25 @@ export class TenantInterceptor implements NestInterceptor {
         }
         return result;
       });
+    }).catch(async (err: unknown) => {
+      if (err instanceof ForbiddenException && who) await this.recordRefusal(who, req, required, err.message);
+      throw err;
     }));
+  }
+
+  private async recordRefusal(who: Principal, req: AuthenticatedRequest, required: string | undefined, reason: string): Promise<void> {
+    const id: unknown = req.params.id;
+    try {
+      await withTenant(this.db, who.orgId, (trx) => this.audit.record(trx, who.orgId, actorOf(who), {
+        action: 'access.denied',
+        resourceType: 'request',
+        resourceId: typeof id === 'string' && UUID.test(id) ? id : null,
+        // The route as declared ("/documents/:id"), not the address asked for.
+        detail: { method: req.method, route: (req.route as { path?: string } | undefined)?.path ?? null, required: required ?? null, reason },
+      }));
+    } catch (err) {
+      this.logger.error(`could not record a refusal: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 

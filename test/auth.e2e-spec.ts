@@ -53,6 +53,10 @@ describe('sign-up and login', () => {
   });
 });
 
+/** Moves every use of a refresh token in the organization into the past, beyond the moment two tabs are allowed. */
+const later = (orgId: string) => t.owner.updateTable('refresh_tokens').set({ used_at: new Date(Date.now() - 60_000) })
+  .where('org_id', '=', orgId).where('used_at', 'is not', null).execute();
+
 describe('refresh tokens', () => {
   test('rotate on every use', async () => {
     const founder = await signUp();
@@ -65,10 +69,48 @@ describe('refresh tokens', () => {
   test('reusing a spent token revokes the whole family, including the newer token', async () => {
     const founder = await signUp();
     const rotated = await t.http().post('/auth/refresh').send({ refreshToken: founder.refreshToken }).expect(200);
+    await later(founder.orgId);
     await t.http().post('/auth/refresh').send({ refreshToken: founder.refreshToken }).expect(401); // stolen copy replayed
     await t.http().post('/auth/refresh').send({ refreshToken: rotated.body.refreshToken }).expect(401);
     const events = await t.owner.selectFrom('audit_events').select('action').where('org_id', '=', founder.orgId).execute();
     expect(events.map((e) => e.action)).toContain('auth.refresh_reuse_detected');
+  });
+
+  test('two tabs refreshing at once get the same pair, and nobody is signed out', async () => {
+    const founder = await signUp();
+    const [a, b] = await Promise.all([1, 2].map(() => t.http().post('/auth/refresh').send({ refreshToken: founder.refreshToken })));
+    expect([a!.status, b!.status]).toEqual([200, 200]);
+    expect(a!.body.refreshToken).toBe(b!.body.refreshToken);
+    await t.http().get('/me').set(bearer(a!.body.accessToken)).expect(200);
+    await t.http().get('/me').set(bearer(b!.body.accessToken)).expect(200);
+    // One line of tokens, not two: the shared successor rotates once, like any other.
+    const rows = await t.owner.selectFrom('refresh_tokens').select('id').where('org_id', '=', founder.orgId).execute();
+    expect(rows).toHaveLength(2);
+    await t.http().post('/auth/refresh').send({ refreshToken: a!.body.refreshToken }).expect(200);
+    const events = await t.owner.selectFrom('audit_events').select('action').where('org_id', '=', founder.orgId).execute();
+    expect(events.map((e) => e.action)).not.toContain('auth.refresh_reuse_detected');
+  });
+
+  test('a thief who replays inside that moment gains no line of their own: the next reuse is caught', async () => {
+    const founder = await signUp();
+    const owner = await t.http().post('/auth/refresh').send({ refreshToken: founder.refreshToken }).expect(200);
+    const thief = await t.http().post('/auth/refresh').send({ refreshToken: founder.refreshToken }).expect(200);
+    expect(thief.body.refreshToken).toBe(owner.body.refreshToken);
+    // The owner carries on; when the thief tries what they hold, it has been spent.
+    const ownerNext = await t.http().post('/auth/refresh').send({ refreshToken: owner.body.refreshToken }).expect(200);
+    await later(founder.orgId);
+    await t.http().post('/auth/refresh').send({ refreshToken: thief.body.refreshToken }).expect(401);
+    await t.http().post('/auth/refresh').send({ refreshToken: ownerNext.body.refreshToken }).expect(401); // family revoked
+  });
+
+  test('the stored successor is no use without the token it replaced', async () => {
+    const founder = await signUp();
+    const rotated = await t.http().post('/auth/refresh').send({ refreshToken: founder.refreshToken }).expect(200);
+    const rows = await t.owner.selectFrom('refresh_tokens').select(['successor_sealed', 'token_hash']).where('org_id', '=', founder.orgId).execute();
+    const stored = JSON.stringify(rows);
+    expect(stored).not.toContain(rotated.body.refreshToken as string);
+    expect(stored).not.toContain(founder.refreshToken);
+    expect(rows.filter((r) => r.successor_sealed !== null)).toHaveLength(1);
   });
 
   test('logout ends the session', async () => {

@@ -43,6 +43,7 @@ export interface RefreshTokensTable {
   expires_at: Timestamp;
   used_at: NullableTimestamp;
   revoked_at: NullableTimestamp;
+  successor_sealed: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: CreatedAt;
 }
 

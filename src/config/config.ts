@@ -8,6 +8,9 @@ const base = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters (openssl rand -hex 32)'),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  // How long a just-used refresh token still answers, with the pair it already produced: long
+  // enough for two tabs refreshing at once, short enough that a replay later is still a theft.
+  REFRESH_REUSE_GRACE_SECONDS: z.coerce.number().int().min(0).default(10),
   LOGIN_MAX_FAILURES: z.coerce.number().int().positive().default(5),
   LOGIN_LOCK_MINUTES: z.coerce.number().int().positive().default(15),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(300),

@@ -306,9 +306,23 @@ const pruneRefreshTokens: Migration = {
   },
 };
 
+/*
+ * A used refresh token keeps its successor, sealed under a key derived from the used token itself
+ * (auth/successor.ts), so that two tabs refreshing at once get the same pair.
+ */
+const refreshSuccessor: Migration = {
+  async up(db: Kysely<unknown>) {
+    await sql`alter table refresh_tokens add column successor_sealed text`.execute(db);
+  },
+  async down(db: Kysely<unknown>) {
+    await sql`alter table refresh_tokens drop column successor_sealed`.execute(db);
+  },
+};
+
 export const migrations: Record<string, Migration> = {
   '001_initial': initial,
   '002_sharing_and_sections': sharing,
   '003_marked_words': markedWords,
   '004_prune_refresh_tokens': pruneRefreshTokens,
+  '005_refresh_successor': refreshSuccessor,
 };
