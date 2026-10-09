@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
 import { type Connection, Hocuspocus, OutgoingMessage } from '@hocuspocus/server';
-import type { Kysely, Transaction } from 'kysely';
+import { type Kysely, sql, type Transaction } from 'kysely';
 import { Client } from 'pg';
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from 'lib0/decoding';
 import { WebSocketServer } from 'ws';
@@ -78,6 +79,10 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const ROOM = new RegExp(`^(section|briefing|member):(${UUID})$`, 'i');
 const PROJECTION = new RegExp(`^projection:(${UUID}):([0-${CLEARANCES.length - 1}])$`, 'i');
 const READ_RECORDED_EVERY_MS = 15 * 60_000;
+const SECTION_CHANNEL = 'rbac_section_sync';
+const FROM_ANOTHER_INSTANCE = 'another-instance'; // the origin of updates that didn't start here
+const MAX_NOTIFICATION = 7500; // PostgreSQL refuses a NOTIFY payload of 8000 bytes or more
+const EMPTY_UPDATE = 2; // an update that says nothing is two bytes
 const SYNC_MESSAGE = 0; // Hocuspocus message type carrying Yjs sync
 const SYNC_STEP_2 = 1;
 const SYNC_UPDATE = 2;
@@ -123,6 +128,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   private readonly fallbacks = new Map<string, NodeJS.Timeout>(); // organization → re-check if no notification comes
   private readonly reprojecting = new Map<string, NodeJS.Timeout>(); // section → pending projection rebuild
   private readonly reads = new Map<string, number>(); // member + section + view → when its read was last recorded
+  private readonly instance = randomUUID(); // tells this instance's own messages from the others'
   private listener?: Client;
   private sweeper?: NodeJS.Timeout;
   private lastSweep = Date.now();
@@ -145,14 +151,18 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
         return document;
       },
       beforeHandleMessage: ({ connection, document, update }) => this.guard(connection, document, update),
-      onChange: async ({ documentName, context }) => {
+      onChange: async ({ documentName, document, context, update, transactionOrigin }) => {
         if (context?.userId) {
           const set = this.editors.get(documentName) ?? new Set<string>();
           set.add(context.userId);
           this.editors.set(documentName, set);
         }
         const target = parseRoom(documentName);
-        if (target?.kind === 'section') this.scheduleProjection(target.id);
+        if (target?.kind === 'section') {
+          this.scheduleProjection(target.id);
+          // An edit made here goes to the other instances; one that came from them stops here.
+          if (transactionOrigin !== FROM_ANOTHER_INSTANCE) void this.publish(documentName, document, { u: Buffer.from(update).toString('base64') });
+        }
         return Promise.resolve();
       },
       onStoreDocument: ({ document, documentName }) => this.store(documentName, document),
@@ -202,6 +212,8 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
       if (!msg.payload) return;
       if (msg.channel === SESSION_CHANNEL) {
         this.endSession(msg.payload);
+      } else if (msg.channel === SECTION_CHANNEL) {
+        void this.receive(msg.payload).catch((err: unknown) => this.logger.warn(`section sync failed: ${err instanceof Error ? err.message : String(err)}`));
       } else {
         const { orgId, scope } = readScope(msg.payload);
         void this.refresh(orgId, scope);
@@ -212,7 +224,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
       if (!this.closing) setTimeout(() => { void this.listen(); }, 1000);
     });
     await client.connect();
-    await client.query(`LISTEN ${ACCESS_CHANNEL}; LISTEN ${SESSION_CHANNEL}`);
+    await client.query(`LISTEN ${ACCESS_CHANNEL}; LISTEN ${SESSION_CHANNEL}; LISTEN ${SECTION_CHANNEL}`);
     this.listener = client;
   }
 
@@ -415,7 +427,80 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     }
     if (target?.kind !== 'section' || !orgId) return;
     const row = await withTenant(this.db, orgId, (trx) => trx.selectFrom('document_sections').select('state').where('id', '=', target.id).executeTakeFirst());
-    if (row?.state.length) Y.applyUpdate(document, new Uint8Array(row.state));
+    if (row?.state.length) Y.applyUpdate(document, new Uint8Array(row.state), FROM_ANOTHER_INSTANCE);
+    // The database lags what another instance's editors have typed since its last save. Say what
+    // this copy has; any instance with the section open answers with what is missing.
+    void this.publish(room, document, { sv: Buffer.from(Y.encodeStateVector(document)).toString('base64') });
+  }
+
+  /*
+   * Several instances. Each keeps its own copy of an open section in memory, so an edit accepted by
+   * one has to reach the others: it is sent through PostgreSQL NOTIFY, which every instance already
+   * listens on, and applied to their copies. Updates merge in any order (they are CRDT updates), so
+   * nothing needs sequencing. Three kinds of message:
+   *   u       an update to apply
+   *   sv      "this is what I have" from an instance that just opened the section; whoever has
+   *           more answers with the difference
+   *   reload  the update was too big for a notification (8000 bytes): it has been saved, read it
+   * Every edit was authorized by the instance that accepted it. What a receiving instance still
+   * has to do itself is protect its own readers when words are classified above their clearance.
+   */
+  private async publish(room: string, document: Y.Doc, message: { u: string } | { sv: string }): Promise<void> {
+    const orgId = this.orgOf.get(room);
+    if (!orgId || this.closing) return;
+    try {
+      let payload = JSON.stringify({ i: this.instance, r: room, o: orgId, ...message });
+      if (payload.length > MAX_NOTIFICATION) {
+        await this.store(room, document);
+        payload = JSON.stringify({ i: this.instance, r: room, o: orgId, reload: true });
+      }
+      await sql`select pg_notify(${SECTION_CHANNEL}, ${payload})`.execute(this.db);
+    } catch (err) {
+      this.logger.warn(`section sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async receive(payload: string): Promise<void> {
+    const message = JSON.parse(payload) as { i: string; r: string; o: string; u?: string; sv?: string; reload?: boolean };
+    if (message.i === this.instance) return;
+    const document = this.hocuspocus.documents.get(message.r);
+    const target = parseRoom(message.r);
+    if (!document || target?.kind !== 'section') return; // not open here: nothing to keep in step
+    if (message.sv) {
+      const missing = Y.encodeStateAsUpdate(document, new Uint8Array(Buffer.from(message.sv, 'base64')));
+      if (missing.length > EMPTY_UPDATE) await this.publish(message.r, document, { u: Buffer.from(missing).toString('base64') });
+      return;
+    }
+    let update: Uint8Array;
+    if (message.u) {
+      update = new Uint8Array(Buffer.from(message.u, 'base64'));
+    } else {
+      const row = await withTenant(this.db, message.o, (trx) => trx.selectFrom('document_sections').select('state').where('id', '=', target.id).executeTakeFirst());
+      if (!row?.state.length) return;
+      update = new Uint8Array(row.state);
+    }
+    this.shield(document, update, message.o);
+    Y.applyUpdate(document, update, FROM_ANOTHER_INSTANCE);
+  }
+
+  /**
+   * Before an update from elsewhere is applied: if it marks words above the clearance of someone
+   * connected to the full text here, they are disconnected first, so it never reaches them.
+   */
+  private shield(document: Y.Doc, update: Uint8Array, orgId: string): void {
+    const probe = new Y.Doc();
+    Y.applyUpdate(probe, Y.encodeStateAsUpdate(document));
+    Y.applyUpdate(probe, update);
+    const after = maxMarkLevel(probe.getXmlFragment(FRAGMENT));
+    probe.destroy();
+    if (after <= maxMarkLevel(document.getXmlFragment(FRAGMENT))) return;
+    for (const other of (document as unknown as { getConnections(): Connection<Context>[] }).getConnections()) {
+      if (other.context.clearance < after) {
+        other.sendStateless(JSON.stringify({ type: 'access', access: 'none' }));
+        other.close({ code: 4403, reason: 'Section now above your clearance' });
+      }
+    }
+    void this.refresh(orgId); // pages here re-fetch: some now read a projection
   }
 
   /** Saves a section (debounced by Hocuspocus) and records who edited it since the last save. */
@@ -425,9 +510,16 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     if (target?.kind !== 'section' || !orgId) return;
     const editors = [...(this.editors.get(room) ?? [])];
     this.editors.delete(room);
-    const marked = maxMarkLevel(document.getXmlFragment(FRAGMENT));
     await withTenant(this.db, orgId, async (trx) => {
-      const before = await trx.selectFrom('document_sections').select('max_mark_level').where('id', '=', target.id).executeTakeFirst();
+      // What is stored may hold edits this copy never received (saved by another instance): they
+      // are merged in before saving, so a save can only add to what is stored.
+      const before = await trx.selectFrom('document_sections').select(['max_mark_level', 'state']).where('id', '=', target.id).forUpdate().executeTakeFirst();
+      if (before?.state.length) {
+        const stored = new Uint8Array(before.state);
+        this.shield(document, stored, orgId);
+        Y.applyUpdate(document, stored, FROM_ANOTHER_INSTANCE);
+      }
+      const marked = maxMarkLevel(document.getXmlFragment(FRAGMENT));
       const updated = await trx.updateTable('document_sections').set({
         state: Buffer.from(Y.encodeStateAsUpdate(document)),
         text_length: textLength(document.getXmlFragment(FRAGMENT)),
