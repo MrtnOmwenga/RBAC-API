@@ -83,6 +83,6 @@ export class DocumentsService {
     authorize(principal, 'document:delete', resourceOf(document));
     await db.deleteFrom('documents').where('id', '=', id).execute();
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'document.delete', resourceType: 'document', resourceId: id });
-    await this.access.announce(db, principal.orgId);
+    await this.access.announce(db, principal.orgId, { document: id });
   }
 }

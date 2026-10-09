@@ -67,7 +67,7 @@ export class BriefingsService {
     await this.audit.record(db, principal.orgId, actorOf(principal), {
       action: 'section.create', resourceType: 'document', resourceId: documentId, detail: { section: section.id, classification: CLEARANCES[input.classification] },
     });
-    await this.access.announce(db, principal.orgId);
+    await this.access.announce(db, principal.orgId, { document: documentId });
     return section;
   }
 
@@ -83,7 +83,7 @@ export class BriefingsService {
       action: 'section.update', resourceType: 'document', resourceId: section.document_id,
       detail: { section: sectionId, ...(changes.classification !== undefined ? { from: CLEARANCES[section.classification], to: CLEARANCES[to] } : {}) },
     });
-    await this.access.announce(db, principal.orgId);
+    await this.access.announce(db, principal.orgId, { document: section.document_id });
   }
 
   async removeSection(sectionId: string) {
@@ -94,7 +94,7 @@ export class BriefingsService {
     if (!canClassify(principal, access, section.classification, section.classification)) throw new ForbiddenException('Not allowed to remove this section');
     await db.deleteFrom('document_sections').where('id', '=', sectionId).execute();
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'section.delete', resourceType: 'document', resourceId: section.document_id, detail: { section: sectionId } });
-    await this.access.announce(db, principal.orgId);
+    await this.access.announce(db, principal.orgId, { document: section.document_id });
   }
 
   async shares(documentId: string) {
@@ -122,7 +122,7 @@ export class BriefingsService {
       action: 'document.share', resourceType: 'document', resourceId: documentId,
       detail: { subject: `${input.subjectType}:${input.subjectId}`, relation: input.relation, expiresAt },
     });
-    await this.access.announce(db, principal.orgId);
+    await this.access.announce(db, principal.orgId, { document: documentId });
     return { id: grant.id, ...input, expiresAt };
   }
 
@@ -133,7 +133,7 @@ export class BriefingsService {
     const removed = await db.deleteFrom('document_grants').where('id', '=', grantId).where('document_id', '=', documentId).executeTakeFirst();
     if (Number(removed.numDeletedRows) === 0) throw new NotFoundException('No such share');
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'document.unshare', resourceType: 'document', resourceId: documentId, detail: { grant: grantId } });
-    await this.access.announce(db, principal.orgId);
+    await this.access.announce(db, principal.orgId, { document: documentId });
   }
 
   /**

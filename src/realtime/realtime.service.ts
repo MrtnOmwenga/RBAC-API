@@ -49,11 +49,23 @@ import { FRAGMENT, maxMarkLevel, project } from './projection';
  * credential for a cross-site page to ride on.
  */
 
+/** How far a permission change reaches: one member's access, or one document's. */
+export type Scope = { member: string } | { document: string };
+
+function readScope(payload: string): { orgId: string; scope?: Scope } {
+  const [orgId = '', kind, id] = payload.split(' ');
+  if (kind === 'member' && id) return { orgId, scope: { member: id } };
+  if (kind === 'document' && id) return { orgId, scope: { document: id } };
+  return { orgId };
+}
+
 type Target = { kind: 'section' | 'briefing' | 'member'; id: string } | { kind: 'projection'; id: string; level: number };
 interface Context {
   userId: string;
   orgId: string;
   target: Target;
+  /** The document a section, projection or briefing connection belongs to. */
+  documentId?: string;
   access: Access;
   clearance: number;
   /** The login the token came from, if any: signing out of it closes this connection. */
@@ -92,6 +104,12 @@ export function textLength(node: Y.XmlFragment | Y.XmlElement | Y.XmlText): numb
     return (node.toDelta() as { insert: unknown }[]).reduce((n, op) => n + (typeof op.insert === 'string' ? op.insert.length : 0), 0);
   }
   return node.toArray().reduce((n, child) => n + (child instanceof Y.XmlHook ? 0 : textLength(child)), 0);
+}
+
+/** Whether a change of this scope could alter what this connection may do. */
+function within(context: Context, scope?: Scope): boolean {
+  if (!scope) return true;
+  return 'member' in scope ? context.userId === scope.member : context.documentId === scope.document;
 }
 
 @Injectable()
@@ -182,8 +200,12 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     const client = new Client({ connectionString: this.config.DATABASE_URL });
     client.on('notification', (msg) => {
       if (!msg.payload) return;
-      if (msg.channel === SESSION_CHANNEL) this.endSession(msg.payload);
-      else void this.refresh(msg.payload);
+      if (msg.channel === SESSION_CHANNEL) {
+        this.endSession(msg.payload);
+      } else {
+        const { orgId, scope } = readScope(msg.payload);
+        void this.refresh(orgId, scope);
+      }
     });
     client.on('error', (err) => {
       this.logger.warn(`permission listener lost: ${err.message}`);
@@ -198,11 +220,12 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     const claims = verifyAccessToken(this.config.JWT_SECRET, token);
     const target = parseRoom(room);
     if (!claims || !target) throw new Error('unauthorized');
-    const { access, clearance } = await withTenant(this.db, claims.orgId, async (trx) => {
+    const { access, clearance, documentId } = await withTenant(this.db, claims.orgId, async (trx) => {
       const principal = await loadPrincipal(trx, { kind: 'user', id: claims.userId, orgId: claims.orgId });
       return {
         access: principal ? await this.accessFor(trx, principal, target) : 'none',
         clearance: principal?.kind === 'user' ? principal.clearance : 0,
+        documentId: await this.documentOf(trx, target),
       };
     });
     if (access === 'none') throw new Error('forbidden');
@@ -210,7 +233,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     connectionConfig.readOnly = target.kind !== 'section' || access !== 'edit';
     this.orgOf.set(room, claims.orgId);
     return {
-      userId: claims.userId, orgId: claims.orgId, target, access, clearance,
+      userId: claims.userId, orgId: claims.orgId, target, access, clearance, ...(documentId ? { documentId } : {}),
       ...(claims.sessionId ? { sessionId: claims.sessionId } : {}), expiresAt: claims.expiresAt.getTime(),
     };
   }
@@ -324,7 +347,8 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
         other.close({ code: 4403, reason: 'Section now above your clearance' });
       }
     }
-    void this.refresh(context.orgId); // every page re-fetches: some now read a projection
+    // Every page showing this document re-fetches: some now read a projection.
+    void this.refresh(context.orgId, context.documentId ? { document: context.documentId } : undefined);
     return Promise.resolve();
   }
 
@@ -356,6 +380,12 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
       if (target?.kind !== 'projection') continue;
       document.transact(() => project(source.getXmlFragment(FRAGMENT), document.getXmlFragment(FRAGMENT), target.level), 'projection');
     }
+  }
+
+  private async documentOf(trx: Transaction<Database>, target: Target): Promise<string | undefined> {
+    if (target.kind === 'member') return undefined;
+    if (target.kind === 'briefing') return target.id;
+    return (await trx.selectFrom('document_sections').select('document_id').where('id', '=', target.id).executeTakeFirst())?.document_id;
   }
 
   private async accessFor(trx: Transaction<Database>, principal: Principal, target: Target): Promise<Access> {
@@ -415,14 +445,14 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   }
 
   /**
-   * Fails closed: every section connection in the organization turns read-only now, before the
+   * Fails closed: every section connection the change could affect turns read-only now, before the
    * permission change commits. The re-check that follows the notification restores the ones still
    * allowed to write. If the change rolls back there is no notification, so a fallback re-check
    * runs after a few seconds either way.
    */
-  lock(orgId: string): void {
+  lock(orgId: string, scope?: Scope): void {
     for (const connection of this.sectionConnections(orgId)) {
-      if (!connection.readOnly) {
+      if (!connection.readOnly && within(connection.context, scope)) {
         connection.readOnly = true;
         this.locked.add(connection);
       }
@@ -440,12 +470,12 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   }
 
   /**
-   * Re-checks every open connection in an organization after a permission change. Runs are
-   * chained per organization so a burst of changes can't interleave.
+   * Re-checks the open connections a permission change could affect (all of the organization's,
+   * with no scope). Runs are chained per organization so a burst of changes can't interleave.
    */
-  refresh(orgId: string): Promise<void> {
+  refresh(orgId: string, scope?: Scope): Promise<void> {
     const previous = this.refreshing.get(orgId) ?? Promise.resolve();
-    const run = previous.then(() => this.recheck(orgId)).catch((err: unknown) => {
+    const run = previous.then(() => this.recheck(orgId, scope)).catch((err: unknown) => {
       this.logger.error(`re-checking access failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     this.refreshing.set(orgId, run);
@@ -453,13 +483,21 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     return run;
   }
 
-  private async recheck(orgId: string): Promise<void> {
-    clearTimeout(this.fallbacks.get(orgId));
-    this.fallbacks.delete(orgId);
+  private async recheck(orgId: string, scope?: Scope): Promise<void> {
+    // The fallback is for a change that rolled back, so it re-checks everything; only a re-check
+    // as wide makes it unnecessary.
+    if (!scope) {
+      clearTimeout(this.fallbacks.get(orgId));
+      this.fallbacks.delete(orgId);
+    }
     for (const [room, document] of this.hocuspocus.documents) {
       if (this.orgOf.get(room) !== orgId) continue;
       for (const connection of document.getConnections() as Connection<Context>[]) {
         const { context } = connection;
+        // Text connections outside the change's reach are left as they are. The channels that only
+        // tell a page to re-fetch are always told: a member with no access yet may just have got some.
+        const carriesText = context.target.kind === 'section' || context.target.kind === 'projection';
+        if (carriesText && !within(context, scope)) continue;
         const access = await withTenant(this.db, orgId, async (trx) => {
           const principal = await loadPrincipal(trx, { kind: 'user', id: context.userId, orgId });
           if (principal?.kind === 'user') context.clearance = principal.clearance;

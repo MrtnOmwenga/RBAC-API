@@ -171,6 +171,57 @@ test('opening a classified section is recorded, once per reader; an unclassified
   expect(await reads()).toEqual([[a.analyst.principal.id, full], [a.director.principal.id, full]]);
 });
 
+test('a change to one document or one member leaves every other editor writing', async () => {
+  const a = await agency();
+  const realtime = t.app.get(RealtimeService);
+  const project = await createProject(t.owner, a.orgId, a.ops);
+  const otherDoc = await createDocument(t.owner, a.orgId, project, a.ops, a.analyst.principal.id);
+  const elsewhere = (await t.owner.insertInto('document_sections').values({
+    org_id: a.orgId, document_id: otherDoc, position: 1, heading: 'Elsewhere', classification: 0, updated_at: new Date(),
+  }).returning('id').executeTakeFirstOrThrow()).id;
+
+  const [here, hereToo] = [join(a.analyst, `section:${a.open}`), join(a.director, `section:${a.open}`)];
+  const [there, thereToo] = [join(a.analyst, `section:${elsewhere}`), join(a.director, `section:${elsewhere}`)];
+  await Promise.all([here.ready, hereToo.ready, there.ready, thereToo.ready]);
+
+  // A change to the first document is about to commit: its editors pause, the other document's don't.
+  realtime.lock(a.orgId, { document: a.doc });
+  type(here.doc, 'held back');
+  type(there.doc, 'goes straight through');
+  await eventually(() => expect(plainText(thereToo.doc)).toContain('goes straight through'), 1000);
+  expect(plainText(hereToo.doc)).not.toContain('held back');
+  await realtime.refresh(a.orgId, { document: a.doc });
+  await eventually(() => expect(plainText(hereToo.doc)).toContain('held back'));
+
+  // A change to one member pauses that member only, on every document they have open.
+  realtime.lock(a.orgId, { member: a.analyst.principal.id });
+  type(hereToo.doc, 'the director carries on');
+  type(there.doc, 'the analyst waits');
+  await eventually(() => expect(plainText(here.doc)).toContain('the director carries on'), 1000);
+  expect(plainText(thereToo.doc)).not.toContain('the analyst waits');
+  await realtime.refresh(a.orgId, { member: a.analyst.principal.id });
+  await eventually(() => expect(plainText(thereToo.doc)).toContain('the analyst waits'));
+});
+
+test('a scoped change still reaches whom it should: revoking a share on one document, with another open', async () => {
+  const a = await agency();
+  const share = await t.http().post(`/documents/${a.doc}/shares`).set(a.analyst.headers)
+    .send({ subjectType: 'user', subjectId: a.outsider.principal.id, relation: 'editor' }).expect(201);
+  const guest = join(a.outsider, `section:${a.open}`);
+  const personal = join(a.outsider, `member:${a.outsider.principal.id}`);
+  const host = join(a.analyst, `section:${a.open}`);
+  await Promise.all([guest.ready, personal.ready, host.ready]);
+  await t.http().delete(`/documents/${a.doc}/shares/${share.body.id}`).set(a.analyst.headers).expect(204);
+  await eventually(() => expect(guest.closeCodes.length).toBeGreaterThan(0));
+  await eventually(() => expect(personal.stateless).toContainEqual({ type: 'refresh' })); // the page is told to re-fetch
+  // The host kept the pen throughout.
+  type(host.doc, 'still mine to edit');
+  await eventually(async () => {
+    const row = await t.owner.selectFrom('document_sections').select('text_length').where('id', '=', a.open).executeTakeFirstOrThrow();
+    expect(row.text_length).toBe(18);
+  }, 10000);
+});
+
 test('bad tokens and unknown rooms are refused', async () => {
   const a = await agency();
   const forged = { ...a.analyst, headers: { authorization: 'Bearer not-a-token' } };

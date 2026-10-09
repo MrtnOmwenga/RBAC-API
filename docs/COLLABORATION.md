@@ -188,9 +188,11 @@ an edit the instant the demotion request returns got that edit accepted, every t
 The fix fails closed and then recovers:
 
 1. **Lock before commit.** The same code that announces the change (`AccessChanges`) first makes
-   every live section connection in that organization read-only on this server, before the
-   transaction commits. From then on, no update is accepted from anyone until the re-check has
-   decided.
+   the live section connections the change could affect read-only on this server, before the
+   transaction commits. A change says how far it reaches: one member's access (a role, a
+   clearance, a disabled account), one document's (a share, a section's classification, a
+   deletion), or anything in the organization. From then on, no update is accepted from those
+   connections until the re-check has decided. Editors the change can't touch keep writing.
 2. **Re-check and restore.** After the commit notification, each connection gets its new access.
    Those still allowed to edit become writable again.
 3. **Recover what the lock refused.** A refused update isn't resent by the client on its own, so a

@@ -94,7 +94,7 @@ export class MembersService {
         to: { role, departmentId, clearance: CLEARANCES[clearance] },
       },
     });
-    await this.access.announce(db, principal.orgId);
+    await this.access.announce(db, principal.orgId, { member: id });
     return view(updated);
   }
 
@@ -109,6 +109,6 @@ export class MembersService {
     await db.updateTable('users').set({ disabled_at: new Date() }).where('id', '=', id).execute();
     await this.auth.revokeAllFor(db, id);
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'member.disable', resourceType: 'user', resourceId: id });
-    await this.access.announce(db, principal.orgId);
+    await this.access.announce(db, principal.orgId, { member: id });
   }
 }
