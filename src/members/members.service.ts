@@ -4,6 +4,7 @@ import { AuthService } from '../auth/auth.service';
 import { hashPassword } from '../auth/passwords';
 import { authorize, listScope } from '../common/http';
 import { findDepartment, findMember } from '../common/lookups';
+import { pageOf, type PageRequest } from '../common/pagination';
 import { TenantContext } from '../database/tenant';
 import { canAssignRole, canManageMember, canSetClearance, CLEARANCES, hasDepartment, type Role } from '../policy/policy';
 import { AccessChanges } from '../realtime/access-changes';
@@ -46,13 +47,13 @@ export class MembersService {
     return view(member);
   }
 
-  async list() {
+  async list(page: PageRequest) {
     const { db, principal } = this.tenant;
     const filter = listScope(principal, 'member:read');
     if (!filter) throw new ForbiddenException('Not allowed to member:read');
-    let query = db.selectFrom('users').select(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'clearance', 'disabled_at', 'created_at']).orderBy('name');
+    let query = db.selectFrom('users').select(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'clearance', 'disabled_at', 'created_at']);
     if (filter.departmentId) query = query.where('department_id', '=', filter.departmentId);
-    return (await query.execute()).map(view);
+    return (await pageOf(query, { column: 'name', kind: 'text', direction: 'asc' }, page)).map(view);
   }
 
   async get(id: string) {

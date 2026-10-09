@@ -1,6 +1,7 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
 import { authorize, listScope } from '../common/http';
+import { pageOf, type PageRequest } from '../common/pagination';
 import { TenantContext } from '../database/tenant';
 
 const view = (d: { id: string; name: string; created_at: Date }) => ({ id: d.id, name: d.name, createdAt: d.created_at });
@@ -17,12 +18,12 @@ export class DepartmentsService {
     return view(department);
   }
 
-  async list() {
+  async list(page: PageRequest) {
     const { db, principal } = this.tenant;
     const filter = listScope(principal, 'department:read');
     if (!filter) throw new ForbiddenException('Not allowed to department:read');
-    let query = db.selectFrom('departments').selectAll().orderBy('name');
+    let query = db.selectFrom('departments').selectAll();
     if (filter.departmentId) query = query.where('id', '=', filter.departmentId);
-    return (await query.execute()).map(view);
+    return (await pageOf(query, { column: 'name', kind: 'text', direction: 'asc' }, page)).map(view);
   }
 }

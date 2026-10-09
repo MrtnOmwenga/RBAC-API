@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
 import { authorize, listScope } from '../common/http';
 import { findDepartment, findProject } from '../common/lookups';
+import { pageOf, type PageRequest } from '../common/pagination';
 import { TenantContext } from '../database/tenant';
 import { AccessChanges } from '../realtime/access-changes';
 
@@ -29,13 +30,13 @@ export class ProjectsService {
     return view(project);
   }
 
-  async list() {
+  async list(page: PageRequest) {
     const { db, principal } = this.tenant;
     const filter = listScope(principal, 'project:read');
     if (!filter) throw new ForbiddenException('Not allowed to project:read');
-    let query = db.selectFrom('projects').selectAll().orderBy('created_at', 'desc').limit(100);
+    let query = db.selectFrom('projects').selectAll();
     if (filter.departmentId) query = query.where('department_id', '=', filter.departmentId);
-    return (await query.execute()).map(view);
+    return (await pageOf(query, { column: 'created_at', kind: 'time', direction: 'desc' }, page)).map(view);
   }
 
   async get(id: string) {

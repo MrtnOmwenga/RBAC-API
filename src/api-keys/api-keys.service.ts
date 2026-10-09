@@ -3,6 +3,7 @@ import { AuditService, actorOf } from '../audit/audit.service';
 import { newApiKey } from '../auth/tokens';
 import { authorize, listScope } from '../common/http';
 import { findDepartment } from '../common/lookups';
+import { pageOf, type PageRequest } from '../common/pagination';
 import { TenantContext } from '../database/tenant';
 import { type Action } from '../policy/policy';
 
@@ -38,10 +39,10 @@ export class ApiKeysService {
     return { ...view(row), key };
   }
 
-  async list() {
+  async list(page: PageRequest) {
     const { db, principal } = this.tenant;
     if (!listScope(principal, 'api_key:read')) throw new ForbiddenException('Not allowed to api_key:read');
-    return (await db.selectFrom('api_keys').select(COLUMNS).orderBy('created_at', 'desc').execute()).map(view);
+    return (await pageOf(db.selectFrom('api_keys').select(COLUMNS), { column: 'created_at', kind: 'time', direction: 'desc' }, page)).map(view);
   }
 
   async revoke(id: string) {

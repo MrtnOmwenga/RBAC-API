@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
 import { authorize, listScope } from '../common/http';
 import { findDocument, findProject } from '../common/lookups';
+import { pageOf, type PageRequest } from '../common/pagination';
 import { TenantContext } from '../database/tenant';
 import { loadDocumentAccess } from '../briefings/access';
 import { AccessChanges } from '../realtime/access-changes';
@@ -38,7 +39,7 @@ export class DocumentsService {
   }
 
   /** What the role reaches, plus anything shared with the member or their department. */
-  async list(projectId?: string) {
+  async list(page: PageRequest, projectId?: string) {
     const { db, principal } = this.tenant;
     const filter = listScope(principal, 'document:read');
     const now = new Date();
@@ -51,13 +52,13 @@ export class DocumentsService {
         .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', now)]))
       : null;
     if (!filter && !shared) throw new ForbiddenException('Not allowed to document:read');
-    let query = db.selectFrom('documents').selectAll().orderBy('updated_at', 'desc').limit(100);
+    let query = db.selectFrom('documents').selectAll();
     query = query.where((eb) => {
       const byRole = filter ? (filter.departmentId ? eb('department_id', '=', filter.departmentId) : eb.lit(true)) : eb.lit(false);
       return shared ? eb.or([byRole, eb('id', 'in', shared)]) : byRole;
     });
     if (projectId) query = query.where('project_id', '=', projectId);
-    return (await query.execute()).map(view);
+    return (await pageOf(query, { column: 'updated_at', kind: 'time', direction: 'desc' }, page)).map(view);
   }
 
   async get(id: string) {

@@ -1,9 +1,12 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { Requires, ZodPipe } from '../common/http';
+import { pageQuery } from '../common/pagination';
 import { DepartmentsService } from './departments.service';
 
 const createBody = z.strictObject({ name: z.string().trim().min(1).max(100) });
+
+const listQuery = z.strictObject(pageQuery);
 
 @Controller('departments')
 export class DepartmentsController {
@@ -17,7 +20,7 @@ export class DepartmentsController {
 
   @Get()
   @Requires('department:read')
-  list() {
-    return this.departments.list();
+  list(@Query(new ZodPipe(listQuery)) query: z.infer<typeof listQuery>) {
+    return this.departments.list(query);
   }
 }

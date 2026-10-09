@@ -1,11 +1,14 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { Requires, ZodPipe } from '../common/http';
+import { pageQuery } from '../common/pagination';
 import { ProjectsService } from './projects.service';
 
 const name = z.string().trim().min(1).max(200);
 const createBody = z.strictObject({ name, departmentId: z.uuid() });
 const updateBody = z.strictObject({ name });
+
+const listQuery = z.strictObject(pageQuery);
 
 @Controller('projects')
 export class ProjectsController {
@@ -19,8 +22,8 @@ export class ProjectsController {
 
   @Get()
   @Requires('project:read')
-  list() {
-    return this.projects.list();
+  list(@Query(new ZodPipe(listQuery)) query: z.infer<typeof listQuery>) {
+    return this.projects.list(query);
   }
 
   @Get(':id')

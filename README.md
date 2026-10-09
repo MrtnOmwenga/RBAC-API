@@ -218,7 +218,9 @@ browser.
 | **Tokens** | `alg: none`, wrong secret, edited payload, expired, wrong audience or issuer, wrong token type, tokens for unknown users or the wrong organization, keys sent as tokens and tokens as keys, revoked and expired keys: all 401. |
 | **Escalation** | Mass assignment, department admins creating or promoting beyond their power or outside their department, self-promotion, API keys requesting human-only scopes or acting beyond them. |
 | **Tenancy** | As the API's own database role: no rows without a tenant, only one tenant's rows with one, writes into another tenant refused, the audit log immune to UPDATE and DELETE. |
-| **Audit** | The chain verifies; a row edited directly in the database is pinpointed; failed requests leave no events; 20 concurrent writes keep one linear chain. |
+| **Audit** | The chain verifies; a row edited directly in the database is pinpointed; failed requests leave no events; 20 concurrent writes keep one linear chain. The log is searched by member, action, resource and time; the export, read back from the file alone, verifies, and an edit to the file is pinpointed. |
+| **Paging** | Following the links visits every row exactly once, with 23 rows sharing one timestamp; rows added meanwhile don't shift a page; a page keeps to what the caller may see; a forged cursor is a 400. |
+| **Migrations** | Every migration has a way back: all are applied, undone to an empty schema, and applied again to an identical one (columns, constraints, indexes, policies, functions, grants). |
 | **Auth flows** | Sign-up, generic login failures, lockout, refresh rotation, reuse detection revoking the family, logout, role changes and disabling applying to live tokens; an API key's last use recorded to the minute; dead refresh tokens deleted while the ones that detect theft are kept. |
 | **Properties** (fast-check) | Nothing crosses organizations; viewers and auditors never mutate; department roles never leave their department; keys never exceed scopes; list filters agree with `can()`; role assignment never escalates; shares only add access and never reach API keys; a section is redacted exactly when clearance is too low; classification and clearance changes stay within the actor's own clearance. |
 
@@ -288,8 +290,12 @@ and the WebSocket to :3000); set `DEMO_MODE=true` for the API.
 | `GET /documents/:id/briefing` · `POST /documents/:id/sections` · `PATCH`, `DELETE /sections/:id` | sectioned documents, redacted per reader |
 | `GET`, `POST /documents/:id/shares` · `DELETE /documents/:id/shares/:grantId` · `GET /documents/:id/explain` | sharing and "why can I see this?" |
 | `ws /collab` (rooms `section:`, `projection:`, `briefing:`, `member:`) · `POST /demo/sessions` (demo mode) | live editing; the demo |
-| `GET /audit-events` · `GET /audit-events/verify` | audit log and chain check |
+| `GET /audit-events?actorId=&action=&resourceId=&from=&to=` · `GET /audit-events/export` (NDJSON) · `GET /audit-events/verify` | audit log: search, export, chain check |
 | `GET /health/live` · `GET /health/ready` | probes |
+
+Lists are a plain array, 100 rows at most (`?limit=`). While there is more, the response has a
+`Link: <…>; rel="next"` header; following it visits every row once, even if rows are added
+meanwhile (keyset paging, not offsets).
 
 </details>
 
