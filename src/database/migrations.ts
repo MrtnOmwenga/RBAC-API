@@ -14,6 +14,11 @@ import { type Kysely, type Migration, sql } from 'kysely';
  *   known (who owns this email / refresh token / API key prefix), returning the minimum needed.
  *
  * Migrations run as the database owner, which needs BYPASSRLS (the compose superuser has it).
+ *
+ * Every migration has a `down` that undoes it, and a test runs them all down and up again and
+ * compares the schema (test/migrations.e2e-spec.ts). The release applies a migration before the new
+ * code takes traffic, so each one must also work with the release that is live: add first, remove
+ * in a later release.
  */
 
 const TENANT_TABLES = ['departments', 'users', 'refresh_tokens', 'api_keys', 'projects', 'documents', 'audit_events'];
@@ -171,6 +176,14 @@ const initial: Migration = {
       grant execute on function auth_login_lookup(text), auth_refresh_lookup(text), auth_api_key_lookup(text) to rbac_app;
     `.execute(db);
   },
+  // The role stays: roles belong to the cluster, and other databases may use it.
+  async down(db: Kysely<unknown>) {
+    await sql`
+      drop function auth_login_lookup(text), auth_refresh_lookup(text), auth_api_key_lookup(text);
+      drop table audit_events, documents, projects, api_keys, refresh_tokens, users, departments, organizations;
+      revoke usage on schema public from rbac_app;
+    `.execute(db);
+  },
 };
 
 /*
@@ -243,6 +256,16 @@ const sharing: Migration = {
       grant execute on function demo_cleanup(interval) to rbac_app;
     `.execute(db);
   },
+  async down(db: Kysely<unknown>) {
+    await sql`
+      drop function demo_cleanup(interval);
+      drop table document_sections, document_grants;
+      alter table documents drop constraint documents_org_id_id;
+      alter table users drop column clearance;
+      alter table projects drop constraint projects_org_id_fkey;
+      alter table organizations drop column is_demo;
+    `.execute(db);
+  },
 };
 
 /*
@@ -256,6 +279,9 @@ const markedWords: Migration = {
       alter table document_sections
         add column max_mark_level smallint not null default 0 check (max_mark_level between 0 and 3);
     `.execute(db);
+  },
+  async down(db: Kysely<unknown>) {
+    await sql`alter table document_sections drop column max_mark_level`.execute(db);
   },
 };
 

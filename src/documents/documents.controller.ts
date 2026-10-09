@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { Requires, ZodPipe } from '../common/http';
+import { pageQuery } from '../common/pagination';
 import { DocumentsService } from './documents.service';
 
 const title = z.string().trim().min(1).max(200);
@@ -8,7 +9,7 @@ const body = z.string().max(100_000);
 const createBody = z.strictObject({ title, body });
 const updateBody = z.strictObject({ title: title.optional(), body: body.optional() })
   .refine((b) => b.title !== undefined || b.body !== undefined, 'Change the title, the body or both');
-const listQuery = z.strictObject({ projectId: z.uuid().optional() });
+const listQuery = z.strictObject({ ...pageQuery, projectId: z.uuid().optional() });
 
 @Controller()
 export class DocumentsController {
@@ -23,7 +24,7 @@ export class DocumentsController {
   @Get('documents')
   @Requires('document:read')
   list(@Query(new ZodPipe(listQuery)) query: z.infer<typeof listQuery>) {
-    return this.documents.list(query.projectId);
+    return this.documents.list(query, query.projectId);
   }
 
   @Get('documents/:id')

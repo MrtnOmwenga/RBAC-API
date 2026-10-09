@@ -1,4 +1,4 @@
-import { Kysely, Migrator, PostgresDialect, sql } from 'kysely';
+import { Kysely, Migrator, NO_MIGRATIONS, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
 import { migrations } from './migrations';
 
@@ -6,11 +6,15 @@ import { migrations } from './migrations';
  * Applies migrations as the owner (`ownerUrl`), then makes sure the API's login role (the user in
  * `appUrl`) exists, can log in with its password and is a member of `rbac_app`. The password comes
  * from `appUrl` or, to keep it out of URLs, from `appPassword`.
+ *
+ * `to` names the migration to stop at, forwards or backwards ('nothing' undoes them all): how a
+ * release is rolled back. Left out, everything pending is applied.
  */
-export async function migrate(ownerUrl: string, appUrl?: string, appPassword?: string): Promise<void> {
+export async function migrate(ownerUrl: string, appUrl?: string, appPassword?: string, to?: string): Promise<void> {
   const db = new Kysely<unknown>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: ownerUrl, max: 1 }) }) });
   try {
-    const { error, results } = await new Migrator({ db, provider: { getMigrations: () => Promise.resolve(migrations) } }).migrateToLatest();
+    const migrator = new Migrator({ db, provider: { getMigrations: () => Promise.resolve(migrations) } });
+    const { error, results } = await (to === undefined ? migrator.migrateToLatest() : migrator.migrateTo(to === 'nothing' ? NO_MIGRATIONS : to));
     for (const r of results ?? []) {
       if (r.status === 'Error') console.error(`migration ${r.migrationName} failed`);
     }
@@ -49,7 +53,9 @@ if (require.main === module) {
     console.error('Set MIGRATION_DATABASE_URL (the database owner) to run migrations');
     process.exit(1);
   }
-  migrate(ownerUrl, process.env.DATABASE_URL, process.env.APP_DB_PASSWORD).then(
+  // MIGRATE_TO=003_marked_words rolls the schema back (or forward) to that migration.
+  const to = process.env.MIGRATE_TO;
+  migrate(ownerUrl, to ? undefined : process.env.DATABASE_URL, process.env.APP_DB_PASSWORD, to).then(
     () => console.log('migrations applied'),
     (err: unknown) => {
       console.error(err);

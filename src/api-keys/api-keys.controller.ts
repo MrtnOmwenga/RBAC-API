@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { Requires, ZodPipe } from '../common/http';
+import { pageQuery } from '../common/pagination';
 import { type Action, INTEGRATION_ACTIONS } from '../policy/policy';
 import { ApiKeysService } from './api-keys.service';
 
@@ -12,6 +13,8 @@ const createBody = z.strictObject({
   departmentId: z.uuid().nullable().default(null),
   expiresInDays: z.number().int().min(1).max(365).nullable().default(90),
 });
+
+const listQuery = z.strictObject(pageQuery);
 
 @Controller('api-keys')
 export class ApiKeysController {
@@ -25,8 +28,8 @@ export class ApiKeysController {
 
   @Get()
   @Requires('api_key:read')
-  list() {
-    return this.keys.list();
+  list(@Query(new ZodPipe(listQuery)) query: z.infer<typeof listQuery>) {
+    return this.keys.list(query);
   }
 
   @Delete(':id')

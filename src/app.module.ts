@@ -22,6 +22,7 @@ import { DemoController } from './demo/demo.controller';
 import { DemoService } from './demo/demo.service';
 import { edgeOnly } from './common/edge';
 import { ProblemDetailsFilter } from './common/http';
+import { PageInterceptor } from './common/pagination';
 import { CONFIG, type Config } from './config/config';
 import { DatabaseModule } from './database/database.module';
 import { DepartmentsController } from './departments/departments.controller';
@@ -81,6 +82,7 @@ export class AppModule {
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthenticationGuard },
         { provide: APP_INTERCEPTOR, useClass: TenantInterceptor },
+        { provide: APP_INTERCEPTOR, useClass: PageInterceptor },
         { provide: APP_FILTER, useClass: ProblemDetailsFilter },
       ],
     };

@@ -1,6 +1,7 @@
-import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { Requires, ZodPipe } from '../common/http';
+import { pageQuery } from '../common/pagination';
 import { ROLES, TOP_CLEARANCE } from '../policy/policy';
 import { MembersService } from './members.service';
 
@@ -17,6 +18,8 @@ const updateBody = z.strictObject({
   clearance: z.number().int().min(0).max(TOP_CLEARANCE).optional(),
 }).refine((b) => b.role !== undefined || b.departmentId !== undefined || b.clearance !== undefined, 'Change the role, department or clearance');
 
+const listQuery = z.strictObject(pageQuery);
+
 @Controller('members')
 export class MembersController {
   constructor(private readonly members: MembersService) {}
@@ -29,8 +32,8 @@ export class MembersController {
 
   @Get()
   @Requires('member:read')
-  list() {
-    return this.members.list();
+  list(@Query(new ZodPipe(listQuery)) query: z.infer<typeof listQuery>) {
+    return this.members.list(query);
   }
 
   @Get(':id')

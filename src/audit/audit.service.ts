@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { sql, type Transaction } from 'kysely';
+import { Page } from '../common/pagination';
 import type { Database } from '../database/schema';
 import type { Principal } from '../policy/policy';
 import { type AuditContent, type ChainCheck, eventHash, genesisHash, type StoredEvent, verifyChain } from './chain';
@@ -9,6 +10,14 @@ export interface AuditEntry {
   resourceType: string;
   resourceId?: string | null;
   detail?: Record<string, unknown>;
+}
+
+export interface AuditFilter {
+  actorId?: string | undefined;
+  resourceId?: string | undefined;
+  action?: string | undefined;
+  from?: Date | undefined;
+  to?: Date | undefined;
 }
 
 type Actor = Pick<AuditContent, 'actorType' | 'actorId'>;
@@ -53,10 +62,36 @@ export class AuditService {
     }).execute();
   }
 
-  async list(trx: Transaction<Database>, orgId: string, limit: number): Promise<StoredEvent[]> {
-    const rows = await trx.selectFrom('audit_events').selectAll().where('org_id', '=', orgId)
-      .orderBy('seq', 'desc').limit(limit).execute();
-    return rows.map(toStored);
+  /** Newest first, narrowed by who, what, which resource and when; `before` continues from a page. */
+  async list(trx: Transaction<Database>, orgId: string, filter: AuditFilter & { limit: number; before?: number | undefined }): Promise<Page<StoredEvent>> {
+    let query = this.matching(trx, orgId, filter).orderBy('seq', 'desc').limit(filter.limit + 1);
+    if (filter.before !== undefined) query = query.where('seq', '<', filter.before);
+    const rows = await query.execute();
+    const items = rows.slice(0, filter.limit).map(toStored);
+    return new Page(items, rows.length > filter.limit ? String(items.at(-1)!.seq) : null, 'before');
+  }
+
+  /**
+   * Oldest first, for handing the log to someone else: each event with its hashes, so the chain
+   * can be re-verified from the export alone. `after` continues from a page.
+   */
+  async export(trx: Transaction<Database>, orgId: string, filter: AuditFilter & { limit: number; after?: number | undefined }): Promise<Page<StoredEvent>> {
+    let query = this.matching(trx, orgId, filter).orderBy('seq', 'asc').limit(filter.limit + 1);
+    if (filter.after !== undefined) query = query.where('seq', '>', filter.after);
+    const rows = await query.execute();
+    const items = rows.slice(0, filter.limit).map(toStored);
+    return new Page(items, rows.length > filter.limit ? String(items.at(-1)!.seq) : null, 'after');
+  }
+
+  private matching(trx: Transaction<Database>, orgId: string, filter: AuditFilter) {
+    let query = trx.selectFrom('audit_events').selectAll().where('org_id', '=', orgId);
+    if (filter.actorId) query = query.where('actor_id', '=', filter.actorId);
+    if (filter.resourceId) query = query.where('resource_id', '=', filter.resourceId);
+    // "auth." matches every action in that family; anything else matches exactly.
+    if (filter.action) query = filter.action.endsWith('.') ? query.where('action', 'like', `${filter.action.replace(/[%_\\]/g, '\\$&')}%`) : query.where('action', '=', filter.action);
+    if (filter.from) query = query.where('at', '>=', filter.from);
+    if (filter.to) query = query.where('at', '<', filter.to);
+    return query;
   }
 
   async verify(trx: Transaction<Database>, orgId: string): Promise<ChainCheck> {
