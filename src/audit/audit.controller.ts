@@ -10,6 +10,8 @@ const filter = {
   resourceId: z.uuid().optional(),
   // An action ("member.update"), or a family of them with a trailing dot ("auth.").
   action: z.string().regex(/^[a-z_]+\.[a-z_]*$/).max(60).optional(),
+  // Up to five actions to leave out, comma-separated.
+  exclude: z.string().regex(/^[a-z_]+\.[a-z_]+(,[a-z_]+\.[a-z_]+){0,4}$/).transform((s) => s.split(',')).optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
 };

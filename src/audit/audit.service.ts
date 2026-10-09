@@ -16,6 +16,8 @@ export interface AuditFilter {
   actorId?: string | undefined;
   resourceId?: string | undefined;
   action?: string | undefined;
+  /** Actions to leave out (exact names): a view of changes without the reads, say. */
+  exclude?: string[] | undefined;
   from?: Date | undefined;
   to?: Date | undefined;
 }
@@ -89,6 +91,7 @@ export class AuditService {
     if (filter.resourceId) query = query.where('resource_id', '=', filter.resourceId);
     // "auth." matches every action in that family; anything else matches exactly.
     if (filter.action) query = filter.action.endsWith('.') ? query.where('action', 'like', `${filter.action.replace(/[%_\\]/g, '\\$&')}%`) : query.where('action', '=', filter.action);
+    if (filter.exclude?.length) query = query.where('action', 'not in', filter.exclude);
     if (filter.from) query = query.where('at', '>=', filter.from);
     if (filter.to) query = query.where('at', '<', filter.to);
     return query;

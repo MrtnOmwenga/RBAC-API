@@ -24,6 +24,7 @@ export interface AuthenticatedRequest extends Request {
 
 const INVALID = 'Missing or invalid credentials';
 const LAST_USED_PRECISION_MS = 60_000;
+const REFUSAL_RECORDED_EVERY_MS = 15 * 60_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -88,6 +89,7 @@ export class AuthenticationGuard implements CanActivate {
 @Injectable()
 export class TenantInterceptor implements NestInterceptor {
   private readonly logger = new Logger('Authorization');
+  private readonly refusals = new Map<string, number>(); // member + route + resource → when last recorded
 
   constructor(
     @Inject(DB) private readonly db: Kysely<Database>,
@@ -125,8 +127,17 @@ export class TenantInterceptor implements NestInterceptor {
     }));
   }
 
+  /**
+   * One event per member, route and resource each quarter of an hour: a page that keeps asking for
+   * what it was refused (a tab left open, a client retrying) is one refusal, not a full log.
+   */
   private async recordRefusal(who: Principal, req: AuthenticatedRequest, required: string | undefined, reason: string): Promise<void> {
     const id: unknown = req.params.id;
+    const key = `${who.id} ${req.method} ${(req.route as { path?: string } | undefined)?.path ?? ''} ${typeof id === 'string' ? id : ''}`;
+    const now = Date.now();
+    if (now - (this.refusals.get(key) ?? 0) < REFUSAL_RECORDED_EVERY_MS) return;
+    this.refusals.set(key, now);
+    if (this.refusals.size > 10_000) for (const [k, at] of this.refusals) if (now - at >= REFUSAL_RECORDED_EVERY_MS) this.refusals.delete(k);
     try {
       await withTenant(this.db, who.orgId, (trx) => this.audit.record(trx, who.orgId, actorOf(who), {
         action: 'access.denied',
