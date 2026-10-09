@@ -156,6 +156,21 @@ test('edits refused while access is being re-checked are recovered afterwards: n
   await eventually(() => expect(plainText(analyst.doc)).toContain('Typed during the lock'));
 });
 
+test('opening a classified section is recorded, once per reader; an unclassified one is not', async () => {
+  const a = await agency();
+  const reads = async () => (await t.owner.selectFrom('audit_events').select(['actor_id', 'detail']).where('org_id', '=', a.orgId).where('action', '=', 'section.read').orderBy('seq').execute())
+    .map((e) => [e.actor_id, e.detail]);
+  await join(a.intern, `section:${a.open}`).ready;
+  expect(await reads()).toEqual([]);
+
+  await join(a.analyst, `section:${a.secret}`).ready;
+  await join(a.analyst, `section:${a.secret}`).ready; // a second tab, or a reconnect
+  await join(a.director, `section:${a.secret}`).ready;
+  await expect(join(a.intern, `section:${a.secret}`).ready).rejects.toThrow(); // refused: nothing was read
+  const full = { section: a.secret, classification: 'secret', view: 'full', markedUpTo: 'unclassified' };
+  expect(await reads()).toEqual([[a.analyst.principal.id, full], [a.director.principal.id, full]]);
+});
+
 test('bad tokens and unknown rooms are refused', async () => {
   const a = await agency();
   const forged = { ...a.analyst, headers: { authorization: 'Bearer not-a-token' } };

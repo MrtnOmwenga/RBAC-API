@@ -118,3 +118,36 @@ describe('finding things in the log', () => {
     await t.http().get('/audit-events/export').set(editor.headers).expect(403);
   });
 });
+
+describe('what the log records beyond changes', () => {
+  test('a refused request is recorded, though everything else it did is rolled back', async () => {
+    const orgId = await createOrg(t.owner);
+    const dept = await createDepartment(t.owner, orgId);
+    const admin = await createUser(t.owner, orgId, 'org_admin', null);
+    const viewer = await createUser(t.owner, orgId, 'viewer', dept);
+    const project = (await t.http().post('/projects').set(admin.headers).send({ name: 'Plans', departmentId: dept }).expect(201)).body.id as string;
+
+    await t.http().delete(`/projects/${project}`).set(viewer.headers).expect(403);
+    await t.http().post('/departments').set(viewer.headers).send({ name: 'Mine now' }).expect(403);
+    await t.http().get('/audit-events').set(viewer.headers).expect(403);
+
+    const denied = await t.http().get('/audit-events?action=access.denied').set(admin.headers).expect(200);
+    expect(denied.body.map((e: StoredEvent) => [e.actorId, e.resourceId, e.detail])).toEqual([
+      [viewer.principal.id, null, { method: 'GET', route: '/audit-events', required: 'audit:read', reason: 'Not allowed to audit:read' }],
+      [viewer.principal.id, null, { method: 'POST', route: '/departments', required: 'department:create', reason: 'Not allowed to department:create' }],
+      [viewer.principal.id, project, { method: 'DELETE', route: '/projects/:id', required: 'project:delete', reason: 'Not allowed to project:delete' }],
+    ]);
+    // The refusals are links in the same chain as everything else.
+    await t.http().get('/audit-events/verify').set(admin.headers).expect(200, { ok: true, events: 4 });
+    expect(await t.owner.selectFrom('projects').select('id').where('id', '=', project).executeTakeFirst()).toBeDefined();
+  });
+
+  test('an allowed request, a missing resource and a bad request are not refusals', async () => {
+    const orgId = await createOrg(t.owner);
+    const admin = await createUser(t.owner, orgId, 'org_admin', null);
+    await t.http().get('/projects').set(admin.headers).expect(200);
+    await t.http().get('/projects/00000000-0000-4000-8000-000000000000').set(admin.headers).expect(404);
+    await t.http().post('/departments').set(admin.headers).send({}).expect(400);
+    expect((await t.http().get('/audit-events').set(admin.headers).expect(200)).body).toEqual([]);
+  });
+});

@@ -65,6 +65,7 @@ interface Context {
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const ROOM = new RegExp(`^(section|briefing|member):(${UUID})$`, 'i');
 const PROJECTION = new RegExp(`^projection:(${UUID}):([0-${CLEARANCES.length - 1}])$`, 'i');
+const READ_RECORDED_EVERY_MS = 15 * 60_000;
 const SYNC_MESSAGE = 0; // Hocuspocus message type carrying Yjs sync
 const SYNC_STEP_2 = 1;
 const SYNC_UPDATE = 2;
@@ -103,6 +104,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   private readonly locked = new Set<Connection<Context>>(); // made read-only pending a re-check
   private readonly fallbacks = new Map<string, NodeJS.Timeout>(); // organization → re-check if no notification comes
   private readonly reprojecting = new Map<string, NodeJS.Timeout>(); // section → pending projection rebuild
+  private readonly reads = new Map<string, number>(); // member + section + view → when its read was last recorded
   private listener?: Client;
   private sweeper?: NodeJS.Timeout;
   private lastSweep = Date.now();
@@ -204,12 +206,41 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
       };
     });
     if (access === 'none') throw new Error('forbidden');
+    if (target.kind === 'section' || target.kind === 'projection') await this.noteRead(claims.orgId, claims.userId, target);
     connectionConfig.readOnly = target.kind !== 'section' || access !== 'edit';
     this.orgOf.set(room, claims.orgId);
     return {
       userId: claims.userId, orgId: claims.orgId, target, access, clearance,
       ...(claims.sessionId ? { sessionId: claims.sessionId } : {}), expiresAt: claims.expiresAt.getTime(),
     };
+  }
+
+  /**
+   * Opening a classified section is recorded: the log says who changed it, and an investigation
+   * asks who read it. A page opens a section's connection once and reconnects now and then, so one
+   * event is written per member, section and view each quarter of an hour, not per connection.
+   */
+  private async noteRead(orgId: string, userId: string, target: Target): Promise<void> {
+    const key = `${userId}:${target.kind}:${target.id}${target.kind === 'projection' ? `:${target.level}` : ''}`;
+    const now = Date.now();
+    if (now - (this.reads.get(key) ?? 0) < READ_RECORDED_EVERY_MS) return;
+    await withTenant(this.db, orgId, async (trx) => {
+      const section = await trx.selectFrom('document_sections').select(['document_id', 'classification', 'max_mark_level'])
+        .where('id', '=', target.id).executeTakeFirst();
+      if (!section) return;
+      const marked = this.markedLevel(target.id, section.max_mark_level);
+      if (section.classification === 0 && marked === 0) return; // nothing classified in it
+      await this.audit.record(trx, orgId, { actorType: 'user', actorId: userId }, {
+        action: 'section.read', resourceType: 'document', resourceId: section.document_id,
+        detail: {
+          section: target.id, classification: CLEARANCES[section.classification],
+          // The full text, or the copy with words above this level barred out.
+          ...(target.kind === 'projection' ? { view: 'projection', level: CLEARANCES[target.level] } : { view: 'full', markedUpTo: CLEARANCES[marked] }),
+        },
+      });
+    });
+    this.reads.set(key, now);
+    if (this.reads.size > 10_000) for (const [k, at] of this.reads) if (now - at >= READ_RECORDED_EVERY_MS) this.reads.delete(k);
   }
 
   private *connections(orgId?: string): Generator<[Connection<Context>, string]> {

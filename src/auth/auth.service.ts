@@ -8,6 +8,7 @@ import type { Database } from '../database/schema';
 import { DB, withTenant } from '../database/tenant';
 import { HousekeepingService } from '../housekeeping/housekeeping.service';
 import { hashPassword, verifyPassword } from './passwords';
+import { openSuccessor, sealSuccessor } from './successor';
 import { newRefreshToken, REFRESH_TOKEN_FORMAT, signAccessToken } from './tokens';
 
 export interface TokenPair {
@@ -94,7 +95,9 @@ export class AuthService {
 
   /**
    * Rotates a refresh token. Each token works once; presenting one that was already used means it
-   * was copied, so the whole family (every token descended from that login) is revoked.
+   * was copied, so the whole family (every token descended from that login) is revoked. The one
+   * exception is a token used a moment ago: that is two tabs refreshing at once, and the second
+   * gets the pair the first was given (auth/successor.ts).
    */
   async refresh(refreshToken: string): Promise<TokenPair> {
     if (!REFRESH_TOKEN_FORMAT.test(refreshToken)) throw new UnauthorizedException(INVALID_REFRESH);
@@ -108,6 +111,9 @@ export class AuthService {
       const fail = { ok: false as const, error: new UnauthorizedException(INVALID_REFRESH) };
       if (token.revoked_at !== null || token.expires_at <= new Date()) return fail;
       if (token.used_at !== null) {
+        const justUsed = Date.now() - token.used_at.getTime() <= this.config.REFRESH_REUSE_GRACE_SECONDS * 1000;
+        const successor = justUsed && token.successor_sealed ? openSuccessor(refreshToken, token.successor_sealed) : null;
+        if (successor) return { ok: true, value: this.pair(found.org_id, token.user_id, token.family_id, successor) };
         await this.revokeFamily(trx, found.org_id, token.family_id);
         await this.audit.record(trx, found.org_id, { actorType: 'user', actorId: token.user_id }, {
           action: 'auth.refresh_reuse_detected', resourceType: 'user', resourceId: token.user_id, detail: { family: token.family_id },
@@ -116,8 +122,10 @@ export class AuthService {
       }
       const user = await trx.selectFrom('users').select('id').where('id', '=', token.user_id).where('disabled_at', 'is', null).executeTakeFirst();
       if (!user) return fail;
-      await trx.updateTable('refresh_tokens').set({ used_at: new Date() }).where('id', '=', token.id).execute();
-      return { ok: true, value: await this.issue(trx, found.org_id, token.user_id, token.family_id) };
+      const next = await this.issue(trx, found.org_id, token.user_id, token.family_id);
+      await trx.updateTable('refresh_tokens').set({ used_at: new Date(), successor_sealed: sealSuccessor(refreshToken, next.refreshToken) })
+        .where('id', '=', token.id).execute();
+      return { ok: true, value: next };
     });
     if (!outcome.ok) throw outcome.error;
     return outcome.value;
@@ -155,9 +163,13 @@ export class AuthService {
       org_id: orgId, user_id: userId, family_id: familyId, token_hash: refresh.hash,
       expires_at: new Date(Date.now() + this.config.REFRESH_TOKEN_TTL_DAYS * 86_400_000),
     }).execute();
+    return this.pair(orgId, userId, familyId, refresh.token);
+  }
+
+  private pair(orgId: string, userId: string, familyId: string, refreshToken: string): TokenPair {
     return {
       accessToken: signAccessToken(this.config.JWT_SECRET, this.config.ACCESS_TOKEN_TTL_SECONDS, { userId, orgId, sessionId: familyId }),
-      refreshToken: refresh.token,
+      refreshToken,
       expiresIn: this.config.ACCESS_TOKEN_TTL_SECONDS,
     };
   }
