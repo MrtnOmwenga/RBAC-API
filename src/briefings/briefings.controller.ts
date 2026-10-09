@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
-import { ZodPipe } from '../common/http';
+import { Requires, ZodPipe } from '../common/http';
 import { TOP_CLEARANCE } from '../policy/policy';
 import { BriefingsService } from './briefings.service';
 
@@ -22,44 +22,52 @@ export class BriefingsController {
   constructor(private readonly briefings: BriefingsService) {}
 
   @Get('documents/:id/briefing')
+  @Requires('document:read')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.briefings.get(id);
   }
 
   @Post('documents/:id/sections')
+  @Requires('document:update')
   addSection(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(sectionBody)) body: z.infer<typeof sectionBody>) {
     return this.briefings.addSection(id, body);
   }
 
   @Patch('sections/:id')
   @HttpCode(204)
+  @Requires('document:update')
   async updateSection(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(sectionUpdate)) body: z.infer<typeof sectionUpdate>): Promise<void> {
     await this.briefings.updateSection(id, body);
   }
 
   @Delete('sections/:id')
   @HttpCode(204)
+  @Requires('document:update')
   async removeSection(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
     await this.briefings.removeSection(id);
   }
 
   @Get('documents/:id/shares')
+  @Requires('document:share')
   shares(@Param('id', ParseUUIDPipe) id: string) {
     return this.briefings.shares(id);
   }
 
   @Post('documents/:id/shares')
+  @Requires('document:share')
   share(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(shareBody)) body: z.infer<typeof shareBody>) {
     return this.briefings.share(id, body);
   }
 
   @Delete('documents/:id/shares/:grantId')
   @HttpCode(204)
+  @Requires('document:share')
   async unshare(@Param('id', ParseUUIDPipe) id: string, @Param('grantId', ParseUUIDPipe) grantId: string): Promise<void> {
     await this.briefings.unshare(id, grantId);
   }
 
   @Get('documents/:id/explain')
+  @Requires('document:read')
   explain(@Param('id', ParseUUIDPipe) id: string, @Query(new ZodPipe(explainQuery)) query: z.infer<typeof explainQuery>) {
     return this.briefings.explain(id, query.userId);
   }

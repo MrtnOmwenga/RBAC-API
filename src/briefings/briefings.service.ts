@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
+import { authorize } from '../common/http';
 import { findDepartment, findMember } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
 import {
@@ -99,7 +100,7 @@ export class BriefingsService {
   async shares(documentId: string) {
     const { db, principal } = this.tenant;
     const { grants, resource } = await loadDocumentAccess(db, principal, documentId);
-    if (!can(principal, 'document:share', resource)) throw new ForbiddenException('Not allowed to document:share');
+    authorize(principal, 'document:share', resource);
     return grants;
   }
 
@@ -107,7 +108,8 @@ export class BriefingsService {
   async share(documentId: string, input: NewShare) {
     const { db, principal } = this.tenant;
     const { resource } = await loadDocumentAccess(db, principal, documentId);
-    if (!can(principal, 'document:share', resource) || principal.kind !== 'user') throw new ForbiddenException('Not allowed to document:share');
+    authorize(principal, 'document:share', resource);
+    if (principal.kind !== 'user') throw new ForbiddenException('Not allowed to document:share');
     if (input.subjectType === 'user') await findMember(db, input.subjectId);
     else await findDepartment(db, input.subjectId);
     const expiresAt = input.expiresInMinutes ? new Date(Date.now() + input.expiresInMinutes * 60_000) : null;
@@ -127,7 +129,7 @@ export class BriefingsService {
   async unshare(documentId: string, grantId: string) {
     const { db, principal } = this.tenant;
     const { resource } = await loadDocumentAccess(db, principal, documentId);
-    if (!can(principal, 'document:share', resource)) throw new ForbiddenException('Not allowed to document:share');
+    authorize(principal, 'document:share', resource);
     const removed = await db.deleteFrom('document_grants').where('id', '=', grantId).where('document_id', '=', documentId).executeTakeFirst();
     if (Number(removed.numDeletedRows) === 0) throw new NotFoundException('No such share');
     await this.audit.record(db, principal.orgId, actorOf(principal), { action: 'document.unshare', resourceType: 'document', resourceId: documentId, detail: { grant: grantId } });
@@ -143,7 +145,7 @@ export class BriefingsService {
     let subject = principal;
     if (userId && userId !== principal.id) {
       const member = await findMember(db, userId);
-      if (!can(principal, 'member:read', { orgId: member.org_id, departmentId: member.department_id })) throw new ForbiddenException('Not allowed to member:read');
+      authorize(principal, 'member:read', { orgId: member.org_id, departmentId: member.department_id });
       const row = await db.selectFrom('users').select('clearance').where('id', '=', userId).executeTakeFirstOrThrow();
       subject = { kind: 'user', id: member.id, orgId: member.org_id, role: member.role, departmentId: member.department_id, clearance: row.clearance };
     }

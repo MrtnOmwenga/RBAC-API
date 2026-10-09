@@ -1,9 +1,8 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
-import { authorize } from '../common/http';
+import { authorize, listScope } from '../common/http';
 import { findDepartment, findProject } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
-import { listFilter } from '../policy/policy';
 import { AccessChanges } from '../realtime/access-changes';
 
 type ProjectRow = Awaited<ReturnType<typeof findProject>>;
@@ -32,7 +31,7 @@ export class ProjectsService {
 
   async list() {
     const { db, principal } = this.tenant;
-    const filter = listFilter(principal, 'project:read');
+    const filter = listScope(principal, 'project:read');
     if (!filter) throw new ForbiddenException('Not allowed to project:read');
     let query = db.selectFrom('projects').selectAll().orderBy('created_at', 'desc').limit(100);
     if (filter.departmentId) query = query.where('department_id', '=', filter.departmentId);

@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post } from '@nestjs/common';
 import { z } from 'zod';
-import { ZodPipe } from '../common/http';
+import { Requires, ZodPipe } from '../common/http';
 import { ROLES, TOP_CLEARANCE } from '../policy/policy';
 import { MembersService } from './members.service';
 
@@ -22,27 +22,32 @@ export class MembersController {
   constructor(private readonly members: MembersService) {}
 
   @Post()
+  @Requires('member:create')
   create(@Body(new ZodPipe(createBody)) body: z.infer<typeof createBody>) {
     return this.members.create(body);
   }
 
   @Get()
+  @Requires('member:read')
   list() {
     return this.members.list();
   }
 
   @Get(':id')
+  @Requires('member:read')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.members.get(id);
   }
 
   @Patch(':id')
+  @Requires('member:update')
   update(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(updateBody)) body: z.infer<typeof updateBody>) {
     return this.members.update(id, body);
   }
 
   @Post(':id/disable')
   @HttpCode(204)
+  @Requires('member:disable')
   async disable(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
     await this.members.disable(id);
   }

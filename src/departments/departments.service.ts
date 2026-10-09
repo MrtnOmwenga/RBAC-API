@@ -1,8 +1,7 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
-import { authorize } from '../common/http';
+import { authorize, listScope } from '../common/http';
 import { TenantContext } from '../database/tenant';
-import { listFilter } from '../policy/policy';
 
 const view = (d: { id: string; name: string; created_at: Date }) => ({ id: d.id, name: d.name, createdAt: d.created_at });
 
@@ -20,7 +19,7 @@ export class DepartmentsService {
 
   async list() {
     const { db, principal } = this.tenant;
-    const filter = listFilter(principal, 'department:read');
+    const filter = listScope(principal, 'department:read');
     if (!filter) throw new ForbiddenException('Not allowed to department:read');
     let query = db.selectFrom('departments').selectAll().orderBy('name');
     if (filter.departmentId) query = query.where('id', '=', filter.departmentId);

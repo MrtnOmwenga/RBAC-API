@@ -1,5 +1,6 @@
 import {
-  type CallHandler, type CanActivate, type ExecutionContext, Inject, Injectable, type NestInterceptor, UnauthorizedException,
+  type CallHandler, type CanActivate, type ExecutionContext, Inject, Injectable, InternalServerErrorException, Logger,
+  type NestInterceptor, UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
@@ -7,10 +8,10 @@ import { type Kysely, sql, type Transaction } from 'kysely';
 import { from, lastValueFrom, type Observable } from 'rxjs';
 import { CONFIG, type Config } from '../config/config';
 import { digestsEqual, sha256 } from '../common/crypto';
-import { IS_PUBLIC } from '../common/http';
+import { ANY_PRINCIPAL, IS_PUBLIC, REQUIRES } from '../common/http';
 import type { Database } from '../database/schema';
 import { DB, TenantContext, withTenant } from '../database/tenant';
-import type { Principal } from '../policy/policy';
+import type { Action, Principal } from '../policy/policy';
 import { API_KEY_FORMAT, verifyAccessToken } from './tokens';
 
 /** Who the credentials name; what they may do is loaded later, inside the tenant transaction. */
@@ -73,18 +74,42 @@ export class AuthenticationGuard implements CanActivate {
  * Wraps each authenticated request in one transaction scoped to the caller's organization, loads
  * the principal (current role, department, scopes) inside it, and exposes both through
  * TenantContext. If the handler throws, everything it wrote, audit events included, rolls back.
+ *
+ * It also holds every route to the action it declares (`@Requires`). The check itself lives in
+ * the service, which has the resource; but if the handler finishes and the policy was never asked
+ * about that action, the request fails and its transaction rolls back. Forgetting the check is a
+ * 500 in the first test that touches the route, not a hole.
  */
 @Injectable()
 export class TenantInterceptor implements NestInterceptor {
-  constructor(@Inject(DB) private readonly db: Kysely<Database>, private readonly tenant: TenantContext) {}
+  private readonly logger = new Logger('Authorization');
+
+  constructor(
+    @Inject(DB) private readonly db: Kysely<Database>,
+    private readonly tenant: TenantContext,
+    private readonly reflector: Reflector,
+  ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const { credential } = context.switchToHttp().getRequest<AuthenticatedRequest>();
     if (!credential) return next.handle();
+    const required = this.reflector.get<Action | typeof ANY_PRINCIPAL | undefined>(REQUIRES, context.getHandler());
+    const route = `${context.getClass().name}.${context.getHandler().name}`;
     return from(withTenant(this.db, credential.orgId, async (trx) => {
       const principal = await loadPrincipal(trx, credential);
       if (!principal) throw new UnauthorizedException(INVALID);
-      return this.tenant.run({ trx, principal }, () => lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined }));
+      return this.tenant.run({ trx, principal }, async () => {
+        const result = await lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined });
+        if (!required) {
+          this.logger.error(`${route} declares no action (@Requires)`);
+          throw new InternalServerErrorException();
+        }
+        if (required !== ANY_PRINCIPAL && !this.tenant.hasDecided(required)) {
+          this.logger.error(`${route} answered without the policy being asked about ${required}`);
+          throw new InternalServerErrorException();
+        }
+        return result;
+      });
     }));
   }
 }

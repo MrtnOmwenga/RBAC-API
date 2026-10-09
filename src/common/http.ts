@@ -4,7 +4,8 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { z } from 'zod';
-import { type Action, can, type Principal, type Resource } from '../policy/policy';
+import { decided } from '../database/tenant';
+import { type Action, can, listFilter, type Principal, type Resource } from '../policy/policy';
 
 export const IS_PUBLIC = 'isPublic';
 /** Marks a route that needs no credentials (sign-up, login, refresh, health). */
@@ -26,8 +27,25 @@ export class ZodPipe<T extends z.ZodType> implements PipeTransform<unknown, z.in
   }
 }
 
+export const REQUIRES = 'requires';
+/** For routes any signed-in principal may use, about themselves (`/me`). */
+export const ANY_PRINCIPAL = 'any';
+/**
+ * The action a route needs. Declaring it doesn't check it: the service does, once it has loaded
+ * the resource. But a request that finishes without the policy having been asked about this
+ * action fails with a 500 and writes nothing, and a route that declares nothing fails a test.
+ */
+export const Requires = (action: Action | typeof ANY_PRINCIPAL) => SetMetadata(REQUIRES, action);
+
 export function authorize(principal: Principal, action: Action, resource: Resource): void {
+  decided(action);
   if (!can(principal, action, resource)) throw new ForbiddenException(`Not allowed to ${action}`);
+}
+
+/** Which rows a list may return: everything in the organization, one department, or nothing (null). */
+export function listScope(principal: Principal, action: Action): { departmentId?: string } | null {
+  decided(action);
+  return listFilter(principal, action);
 }
 
 interface PgError {

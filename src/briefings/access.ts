@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import type { Transaction } from 'kysely';
 import type { Database } from '../database/schema';
+import { decided } from '../database/tenant';
 import { type Access, documentAccess, type Grant, type Principal } from '../policy/policy';
 
 /*
@@ -22,7 +23,10 @@ export async function loadDocumentAccess(trx: Transaction<Database>, principal: 
   if (!document) throw new NotFoundException('No such document');
   const grants = await grantsOf(trx, documentId);
   const resource = { orgId: document.org_id, departmentId: document.department_id, ownerId: document.author_id };
+  // The access level answers both questions: 'read' or 'edit' may read, only 'edit' may update.
   const access: Access = documentAccess(principal, resource, grants);
+  decided('document:read');
+  decided('document:update');
   return { document, grants, resource, access };
 }
 

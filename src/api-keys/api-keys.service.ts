@@ -1,10 +1,10 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
 import { newApiKey } from '../auth/tokens';
-import { authorize } from '../common/http';
+import { authorize, listScope } from '../common/http';
 import { findDepartment } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
-import { type Action, listFilter } from '../policy/policy';
+import { type Action } from '../policy/policy';
 
 interface KeyRow {
   id: string; name: string; prefix: string; scopes: Action[]; department_id: string | null;
@@ -40,7 +40,7 @@ export class ApiKeysService {
 
   async list() {
     const { db, principal } = this.tenant;
-    if (!listFilter(principal, 'api_key:read')) throw new ForbiddenException('Not allowed to api_key:read');
+    if (!listScope(principal, 'api_key:read')) throw new ForbiddenException('Not allowed to api_key:read');
     return (await db.selectFrom('api_keys').select(COLUMNS).orderBy('created_at', 'desc').execute()).map(view);
   }
 
