@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
 import { z } from 'zod';
-import { Public, ZodPipe } from '../common/http';
+import { Public, Requires, ZodPipe } from '../common/http';
 import { TenantContext } from '../database/tenant';
 import { AuthService } from './auth.service';
 
@@ -49,6 +49,7 @@ export class MeController {
   constructor(private readonly tenant: TenantContext) {}
 
   @Get()
+  @Requires('any')
   me() {
     return this.tenant.principal;
   }

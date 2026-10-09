@@ -2,10 +2,10 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
 import { hashPassword } from '../auth/passwords';
-import { authorize } from '../common/http';
+import { authorize, listScope } from '../common/http';
 import { findDepartment, findMember } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
-import { canAssignRole, canManageMember, canSetClearance, CLEARANCES, hasDepartment, listFilter, type Role } from '../policy/policy';
+import { canAssignRole, canManageMember, canSetClearance, CLEARANCES, hasDepartment, type Role } from '../policy/policy';
 import { AccessChanges } from '../realtime/access-changes';
 
 type MemberRow = Awaited<ReturnType<typeof findMember>>;
@@ -48,7 +48,7 @@ export class MembersService {
 
   async list() {
     const { db, principal } = this.tenant;
-    const filter = listFilter(principal, 'member:read');
+    const filter = listScope(principal, 'member:read');
     if (!filter) throw new ForbiddenException('Not allowed to member:read');
     let query = db.selectFrom('users').select(['id', 'org_id', 'email', 'name', 'role', 'department_id', 'clearance', 'disabled_at', 'created_at']).orderBy('name');
     if (filter.departmentId) query = query.where('department_id', '=', filter.departmentId);

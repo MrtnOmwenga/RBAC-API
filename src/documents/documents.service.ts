@@ -1,9 +1,8 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AuditService, actorOf } from '../audit/audit.service';
-import { authorize } from '../common/http';
+import { authorize, listScope } from '../common/http';
 import { findDocument, findProject } from '../common/lookups';
 import { TenantContext } from '../database/tenant';
-import { listFilter } from '../policy/policy';
 import { loadDocumentAccess } from '../briefings/access';
 import { AccessChanges } from '../realtime/access-changes';
 
@@ -41,7 +40,7 @@ export class DocumentsService {
   /** What the role reaches, plus anything shared with the member or their department. */
   async list(projectId?: string) {
     const { db, principal } = this.tenant;
-    const filter = listFilter(principal, 'document:read');
+    const filter = listScope(principal, 'document:read');
     const now = new Date();
     const shared = principal.kind === 'user'
       ? db.selectFrom('document_grants').select('document_id')

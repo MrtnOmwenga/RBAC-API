@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { z } from 'zod';
-import { ZodPipe } from '../common/http';
+import { Requires, ZodPipe } from '../common/http';
 import { type Action, INTEGRATION_ACTIONS } from '../policy/policy';
 import { ApiKeysService } from './api-keys.service';
 
@@ -18,17 +18,20 @@ export class ApiKeysController {
   constructor(private readonly keys: ApiKeysService) {}
 
   @Post()
+  @Requires('api_key:create')
   create(@Body(new ZodPipe(createBody)) body: z.infer<typeof createBody>) {
     return this.keys.create(body);
   }
 
   @Get()
+  @Requires('api_key:read')
   list() {
     return this.keys.list();
   }
 
   @Delete(':id')
   @HttpCode(204)
+  @Requires('api_key:revoke')
   async revoke(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
     await this.keys.revoke(id);
   }

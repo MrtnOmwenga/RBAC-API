@@ -155,6 +155,11 @@ request ─► ThrottlerGuard ─► AuthenticationGuard ─► TenantIntercepto
                                                         audit events included)
 ```
 
+- **No endpoint can forget to ask.** The check lives in the service, because it needs the
+  resource loaded first, which makes it a call someone could leave out. So every route declares
+  the action it needs (`@Requires('document:delete')`), and the interceptor holds it to that: if
+  the handler finishes and the policy was never asked about that action, the request fails with a
+  500 and its transaction rolls back. A test fails for any route that declares nothing.
 - Resources from another organization are invisible under row-level security, so their IDs answer
   **404**, the same as IDs that don't exist. A resource the caller can see but not act on is **403**.
 - Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem document; unexpected
@@ -205,6 +210,7 @@ browser.
 | Suite | What it proves |
 |---|---|
 | **Authorization matrix** (441 cases) | Eight principals (five roles, three kinds of API key) × every action × own department, other department, other organization. Expected results come from the policy, so every endpoint is shown to enforce exactly the table above. Removing a single permission check (the one on document updates) fails 13 cases. |
+| **Declared actions** | Every route is public or declares its action; every action in the policy is needed by some route; a service method rewritten to skip its check answers 500 and what it wrote is rolled back. |
 | **Realtime** | Real WebSocket clients: cleared editors sync and are saved and audited; an uncleared member is refused and receives nothing; a reader's edits reach no one; demotion mid-session turns the connection read-only; lowered clearance or a revoked share disconnects; personal channels reach members with no access yet; no edit lands once a demotion has committed; edits refused during a re-check are recovered. With no change to announce: a temporary share running out closes the guest, a connection ends with the token that opened it, and signing out closes that session's connections and leaves the member's other session open. |
 | **Word-level classification** | A reader below the marks is refused the full text; their projection shows bars, and the hidden words aren't anywhere in the document bytes they receive; projections follow edits live; classifying above a connected editor's clearance disconnects them before the next keystroke; classifying above your own clearance is refused; marks are saved and audited. A property test checks 500 random documents for leaks. |
 | **Sharing and sections** | Redacted sections carry no heading or text; department and user shares, temporary shares expiring, cross-organization shares refused; classification bounded by clearance; "why can I see this?"; every change audited. |
