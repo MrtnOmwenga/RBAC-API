@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const schema = z.object({
+const base = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
@@ -20,6 +20,15 @@ const schema = z.object({
   REALTIME_SWEEP_SECONDS: z.coerce.number().int().positive().default(15),
   // The built demo UI (web/dist), served from the API's own origin when present.
   WEB_DIR: z.string().default('web/dist'),
+  // When set, only requests carrying it in X-Edge-Secret are served (health checks apart): the
+  // reverse proxy in front sends it, so the API's own address can't be used to go around the proxy.
+  EDGE_SECRET: z.string().min(32, 'EDGE_SECRET must be at least 32 characters').optional(),
+  // The header the proxy puts the visitor's address in; rate limits count by it.
+  CLIENT_IP_HEADER: z.string().min(1).optional(),
+});
+
+const schema = base.refine((c) => !c.CLIENT_IP_HEADER || c.EDGE_SECRET, {
+  path: ['CLIENT_IP_HEADER'], message: 'needs EDGE_SECRET: without it anyone could send that header',
 });
 
 export type Config = z.infer<typeof schema>;

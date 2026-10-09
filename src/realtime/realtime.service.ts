@@ -13,6 +13,7 @@ import { SESSION_CHANNEL } from '../auth/auth.service';
 import { loadPrincipal } from '../auth/authentication';
 import { verifyAccessToken } from '../auth/tokens';
 import { ACCESS_CHANNEL, loadDocumentAccess } from '../briefings/access';
+import { fromEdge } from '../common/edge';
 import { CONFIG, type Config } from '../config/config';
 import type { Database } from '../database/schema';
 import { DB, withTenant } from '../database/tenant';
@@ -145,7 +146,7 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   async onApplicationBootstrap(): Promise<void> {
     const server = this.adapterHost.httpAdapter.getHttpServer() as import('node:http').Server;
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-      if (!req.url?.startsWith('/collab')) {
+      if (!req.url?.startsWith('/collab') || !fromEdge(this.config, req.headers)) {
         socket.destroy();
         return;
       }

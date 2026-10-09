@@ -20,6 +20,7 @@ import { RealtimeService } from './realtime/realtime.service';
 import { AccessChanges } from './realtime/access-changes';
 import { DemoController } from './demo/demo.controller';
 import { DemoService } from './demo/demo.service';
+import { edgeOnly } from './common/edge';
 import { ProblemDetailsFilter } from './common/http';
 import { CONFIG, type Config } from './config/config';
 import { DatabaseModule } from './database/database.module';
@@ -29,6 +30,7 @@ import { DocumentsController } from './documents/documents.controller';
 import { DocumentsService } from './documents/documents.service';
 import { HealthController } from './health/health.controller';
 import { HousekeepingService } from './housekeeping/housekeeping.service';
+import { InternalController } from './housekeeping/internal.controller';
 import { MembersController } from './members/members.controller';
 import { MembersService } from './members/members.service';
 import { ProjectsController } from './projects/projects.controller';
@@ -72,7 +74,7 @@ export class AppModule {
       ],
       controllers: [
         AuthController, MeController, DepartmentsController, MembersController, ProjectsController, DocumentsController,
-        ApiKeysController, AuditController, HealthController, BriefingsController, DemoController,
+        ApiKeysController, AuditController, HealthController, BriefingsController, DemoController, InternalController,
       ],
       providers: [
         AuditService, HousekeepingService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService, AccessChanges, DemoService,
@@ -89,6 +91,7 @@ export class AppModule {
 export function configureApp(app: INestApplication): void {
   app.useLogger(app.get(Logger));
   app.use(helmet());
+  app.use(edgeOnly(app.get<Config>(CONFIG)));
   const http = app.getHttpAdapter().getInstance() as { set(key: string, value: unknown): void };
   http.set('trust proxy', 1);
   // The demo UI shares the API's origin, so its WebSocket and requests need no CORS.
