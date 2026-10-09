@@ -1,0 +1,177 @@
+# How Redacted is put together, as data. The portfolio site draws this file as an interactive
+# diagram (martinomwenga.com/projects/redacted/architecture) and its assistant reads it to walk
+# visitors through the system. A unit test (src/architecture.spec.ts) fails if a part names a file
+# that no longer exists, or a connection or step names a part that isn't here.
+title: How Redacted is put together
+summary: >-
+  One server process, one PostgreSQL database. The browser talks to the server two ways: ordinary
+  requests for everything that changes permissions, and an open connection per section for live
+  editing. Both ask the same policy code what a member may do.
+repository: https://github.com/MrtnOmwenga/RBAC-API
+
+lanes:
+  - id: browser
+    label: In the browser
+  - id: server
+    label: The server (one NestJS process)
+  - id: database
+    label: PostgreSQL
+
+parts:
+  - id: page
+    lane: browser
+    name: The page
+    what: Shows the briefing and its controls, and makes every request that changes something.
+    detail: >-
+      A React app. It only draws what the server sent: a redaction bar on screen is a bar in
+      the data, and there is nothing behind it for the developer tools to find.
+    code: [web/src/Room.tsx, web/src/api.ts]
+    handbook: redacted/07-demo
+
+  - id: editor
+    lane: browser
+    name: Section editors
+    what: One live editor per section the member is cleared for, each on its own connection.
+    detail: >-
+      Each editor holds a Yjs copy of one section and merges other people's edits as they arrive.
+      A section the member can't read has no editor and no connection at all.
+    code: [web/src/SectionEditor.tsx, web/src/SectionBoundary.tsx]
+    handbook: redacted/06-live-collaboration
+
+  - id: api
+    lane: server
+    name: REST API
+    what: Handles requests. Every route names the action it needs and fails if nobody asked the policy.
+    detail: >-
+      Each request runs inside one database transaction pinned to the caller's organization. A
+      route that finishes without the policy having decided its declared action returns an error
+      instead of an answer, so an endpoint that forgets to check can't leak.
+    code: [src/members/members.service.ts, src/briefings/briefings.service.ts, src/database/tenant.ts]
+    handbook: redacted/01-permissions
+
+  - id: policy
+    lane: server
+    name: Policy
+    what: One file of plain functions that answers "may this member do this to that?".
+    detail: >-
+      Roles, departments, clearance levels and shares all meet here. The REST API and the live
+      connections call the same functions, so a browser tab and an open connection can never
+      disagree about what someone may see.
+    code: [src/policy/policy.ts, src/briefings/access.ts]
+    handbook: redacted/01-permissions
+
+  - id: realtime
+    lane: server
+    name: Collaboration server
+    what: Holds the open connections, merges edits, and re-checks every connection when access changes.
+    detail: >-
+      A Hocuspocus server inside the same process. A connection is checked when it opens and again
+      whenever a permission change is announced. A read-only connection is read-only on the
+      server: edits it sends are dropped, whatever the page shows.
+    code: [src/realtime/realtime.service.ts]
+    handbook: redacted/06-live-collaboration
+
+  - id: projection
+    lane: server
+    name: Redacted copies
+    what: Writes a separate copy of a section for each clearance level, with classified words replaced by bars.
+    detail: >-
+      Readers below a word's classification connect to a copy that never contained it. The bar's
+      length is rounded so it doesn't give away the length of the word behind it.
+    code: [src/realtime/projection.ts]
+    handbook: redacted/05-redaction
+
+  - id: audit
+    lane: server
+    name: Audit log
+    what: Records who did what, in the same transaction as the change itself.
+    detail: >-
+      Each row carries a hash of the row before it, so a deleted or edited row breaks the chain.
+      The head of the chain is signed, so a copy of the log can be checked away from the server.
+    code: [src/audit/audit.service.ts, src/audit/chain.ts, src/audit/checkpoint.ts]
+    handbook: redacted/04-audit-log
+
+  - id: tables
+    lane: database
+    name: Tenant tables
+    what: Every organization's rows, behind row-level security the server can't switch off.
+    detail: >-
+      The server connects as a role that owns nothing. A query that forgets its organization
+      filter returns no rows instead of another organization's rows.
+    code: [src/database/migrations.ts, src/database/tenant.ts]
+    handbook: redacted/02-tenants-and-database
+
+  - id: notices
+    lane: database
+    name: Notifications
+    what: PostgreSQL's own broadcast (LISTEN/NOTIFY), used to tell every server instance that access changed.
+    detail: >-
+      A notice is sent inside the transaction that makes the change, so it is delivered only if
+      the change commits. No message broker to run, and no notice for a change that didn't happen.
+    code: [src/realtime/access-changes.ts]
+    handbook: redacted/06-live-collaboration
+
+connections:
+  - { from: page, to: api, label: HTTPS requests }
+  - { from: editor, to: realtime, label: one WebSocket per section }
+  - { from: api, to: policy, label: asks }
+  - { from: realtime, to: policy, label: asks }
+  - { from: api, to: realtime, label: locks before commit }
+  - { from: realtime, to: projection, label: rewrites on edit }
+  - { from: api, to: audit, label: records }
+  - { from: api, to: tables, label: one transaction per request }
+  - { from: audit, to: tables, label: same transaction }
+  - { from: realtime, to: tables, label: loads and saves sections }
+  - { from: api, to: notices, label: announces }
+  - { from: notices, to: realtime, label: every instance hears }
+
+flows:
+  - id: demote
+    title: A Director demotes an editor who is mid-sentence
+    summary: >-
+      The hard case for any live editor: the connection was allowed when it opened, and it is
+      still open. Redacted refuses edits first and sorts out who keeps access second.
+    steps:
+      - from: page
+        to: api
+        title: The request
+        text: The Director changes the member's role. The page sends one ordinary request.
+      - from: api
+        to: policy
+        title: May the Director do this?
+        text: >-
+          The policy checks that this Director may manage this member and may hand out the new
+          role. If not, the request stops here.
+      - from: api
+        to: realtime
+        title: Lock first
+        text: >-
+          Before anything is saved, the member's open section connections turn read-only on the
+          server. From this moment no edit from them is accepted.
+      - from: api
+        to: tables
+        title: Save, record, announce
+        text: >-
+          One transaction changes the role, writes the audit row and queues a notification. Either
+          all three happen or none do.
+      - from: notices
+        to: realtime
+        title: Every instance hears
+        text: >-
+          The transaction commits and PostgreSQL delivers the notification to every server
+          instance, including ones the Director's request never touched.
+      - from: realtime
+        to: policy
+        title: Re-check
+        text: >-
+          Each affected connection is put through the same policy code as a fresh request, with
+          the member's new role.
+      - from: realtime
+        to: editor
+        title: The editor locks
+        text: >-
+          The demoted member's editor goes read-only, or closes if they lost access entirely.
+          Anyone who kept access is restored, and whatever they typed during the lock is resent.
+    proof: >-
+      A test sends an edit the instant the demotion request returns and checks it never lands;
+      another checks an edit refused during the lock is recovered (test/realtime.e2e-spec.ts).
