@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Session } from './session';
 import { Proof } from './Proof';
 import { Tour, type TourMode } from './Tour';
-import type { Key } from './tour';
+import { type Chapter, CHAPTERS, type Key } from './tour';
 
 const ORDER = ['director', 'analyst', 'intern', 'liaison'] as const;
 
@@ -44,6 +44,13 @@ export function Room({ session }: { session: Session }) {
           <>
             <button type="button" className="ghost" onClick={() => setTour('play')}>Play it for me</button>
             <button type="button" className="ghost" onClick={() => setTour('guide')}>Guide me</button>
+            <label className="chapters">
+              <span className="visually-hidden">More chapters</span>
+              <select value="" onChange={(e) => { if (e.target.value) setTour(e.target.value as Chapter); }}>
+                <option value="">More chapters…</option>
+                {(Object.keys(CHAPTERS) as Chapter[]).map((key) => <option key={key} value={key}>{CHAPTERS[key].name}</option>)}
+              </select>
+            </label>
           </>
         )}
         <button type="button" className="ghost" onClick={() => setProof(true)}>Is this real?</button>
@@ -64,7 +71,7 @@ export function Room({ session }: { session: Session }) {
         })}
       </div>
       {proof && <Proof session={session} onClose={closeProof} />}
-      {tour && ready && <Tour session={session} mode={tour} frames={frames} onExit={endTour} onFocus={setBeside} />}
+      {tour && ready && <Tour key={tour} session={session} mode={tour} frames={frames} onExit={endTour} onFocus={setBeside} onChapter={setTour} />}
     </div>
   );
 }

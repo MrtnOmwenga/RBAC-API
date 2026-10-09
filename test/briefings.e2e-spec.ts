@@ -135,3 +135,15 @@ test('a document has no text outside its sections: nothing to read around a clas
   expect(created.body).not.toHaveProperty('body');
   expect((await t.http().get(`/documents/${a.doc}`).set(a.intern.headers).expect(200)).body).not.toHaveProperty('body');
 });
+
+test('a share can be given seconds to live, and one end only', async () => {
+  const a = await agency();
+  const share = (body: object) => t.http().post(`/documents/${a.doc}/shares`).set(a.analyst.headers).send({ subjectType: 'user', subjectId: a.outsider.principal.id, relation: 'reader', ...body });
+  await share({ expiresInSeconds: 2 }).expect(400); // too short to be a share at all
+  await share({ expiresInSeconds: 30, expiresInMinutes: 5 }).expect(400);
+  const made = await share({ expiresInSeconds: 30 }).expect(201);
+  const left = new Date(made.body.expiresAt as string).getTime() - Date.now();
+  expect(left).toBeGreaterThan(25_000);
+  expect(left).toBeLessThanOrEqual(30_000);
+  await t.http().get(`/documents/${a.doc}/briefing`).set(a.outsider.headers).expect(200);
+});
