@@ -58,3 +58,38 @@ test('"Guide me" waits for the visitor, and moves on when they act', async ({ pa
   await pane(page, 'intern').getByRole('button', { name: 'Why can I see this?' }).click();
   await expect(card).toContainText('That\'s everything', { timeout: 15_000 });
 });
+
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 420, height: 860 } });
+
+  test('the Director sits above one chosen agent, and the tour brings each effect into view', async ({ page }) => {
+    test.setTimeout(150_000);
+    await page.goto('/?tour=play');
+    await page.getByRole('button').first().click();
+    const frame = (key: string) => page.locator(`iframe[src="/?pane=${key}"]`);
+    const switcher = page.getByRole('group', { name: 'Agent shown below the Director' });
+    const card = page.getByRole('region', { name: 'Guided demo' });
+
+    // Two panes on screen, both within the viewport: the Director and the one the step is about.
+    await expect(card).toContainText('step 2 of 7', { timeout: 30_000 });
+    await expect(switcher.getByRole('button', { name: 'Intern' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(frame('director')).toBeInViewport();
+    await expect(frame('intern')).toBeInViewport();
+    await expect(frame('liaison')).toBeHidden();
+    // The caption sits below the panes, not over the one showing the effect.
+    const [paneBox, cardBox] = [await frame('intern').boundingBox(), await card.boundingBox()];
+    expect(paneBox!.y + paneBox!.height).toBeLessThanOrEqual(cardBox!.y + 1);
+
+    // When the story moves to the Liaison, so does the screen; the effect lands in a pane that was out of sight.
+    await expect(card).toContainText('Share it across divisions', { timeout: 90_000 });
+    await expect(switcher.getByRole('button', { name: 'Liaison' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(pane(page, 'liaison').getByRole('heading', { name: 'Exfiltration' })).toBeVisible();
+
+    // After the tour, the visitor chooses.
+    await expect(card).toContainText('Your turn', { timeout: 60_000 });
+    await card.getByRole('button', { name: 'Explore freely' }).click();
+    await switcher.getByRole('button', { name: 'Analyst' }).click();
+    await expect(frame('analyst')).toBeInViewport();
+    await expect(pane(page, 'analyst').getByLabel('Redacted section')).toHaveCount(2); // demoted while it was out of sight
+  });
+});

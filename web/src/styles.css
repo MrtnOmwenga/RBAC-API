@@ -40,10 +40,22 @@ a { color: #e9ebef; }
 .room-bar .hint { flex: 1; margin: 0; color: #cfd3da; font-size: 0.9rem; line-height: 1.4; }
 .grid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; background: #2a2e36; min-height: 0; }
 .pane-frame { width: 100%; height: 100%; border: none; background: var(--desk); }
+.pane-switch { display: none; }
+/* Narrow screens: the Director above one other agent, chosen with the switcher, so a change and
+   its effect are on screen together. The other two stay loaded, laid out but out of sight. */
 @media (max-width: 900px) {
-  .room { height: auto; }
-  .grid { grid-template-columns: 1fr; grid-template-rows: none; }
-  .pane-frame { height: 85vh; }
+  .room { height: 100dvh; }
+  .room-bar { flex-wrap: wrap; gap: 0.5rem; padding: 0.45rem 0.6rem; }
+  .room-bar .hint { display: none; }
+  .room-bar .wordmark { margin-right: auto; }
+  .pane-switch { display: flex; border-bottom: 1px solid #2a2e36; }
+  .pane-switch button {
+    flex: 1; min-height: 44px; background: none; border: none; border-bottom: 3px solid transparent;
+    color: #cfd3da; font: inherit; font-size: 0.9rem;
+  }
+  .pane-switch button[aria-pressed="true"] { color: #fff; border-bottom-color: #f1c40f; font-weight: 700; }
+  .grid { position: relative; grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+  .pane-frame.aside { position: absolute; left: 0; top: 0; height: 50%; visibility: hidden; pointer-events: none; }
 }
 
 /* ── pane ────────────────────────────────────────────── */
@@ -163,7 +175,9 @@ a { color: #e9ebef; }
 .tour .primary { margin-top: 0; }
 .tour .error { color: #a93226; }
 @media (prefers-reduced-motion: reduce) { .pane-frame { transition: none; } }
+/* Narrow screens: the caption takes its place below the two panes instead of floating over the
+   lower one, which is where the effect shows. */
 @media (max-width: 900px) {
   .room.touring .grid { margin-bottom: 0; }
-  .tour { max-height: 38vh; }
+  .tour { position: static; transform: none; width: auto; max-height: 36dvh; border-radius: 0; box-shadow: none; }
 }

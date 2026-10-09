@@ -24,6 +24,9 @@ export function Room({ session }: { session: Session }) {
     history.replaceState(null, '', '?room');
   };
   const ready = ORDER.every((k) => frames[k]);
+  // On a narrow screen the Director's pane sits above one other pane, so a change and its effect
+  // are on screen together. All four panes stay loaded; this only chooses which one is shown.
+  const [beside, setBeside] = useState<Key>('analyst');
 
   return (
     <div className={`room ${tour ? 'touring' : ''}`}>
@@ -42,13 +45,21 @@ export function Room({ session }: { session: Session }) {
         )}
         <button type="button" className="ghost" onClick={restart}>New agency</button>
       </header>
+      <div className="pane-switch" role="group" aria-label="Agent shown below the Director">
+        {ORDER.filter((key) => key !== 'director').map((key) => (
+          <button key={key} type="button" aria-pressed={beside === key} onClick={() => setBeside(key)}>
+            {session.characters.find((x) => x.key === key)!.title.split(',')[0]}
+          </button>
+        ))}
+      </div>
       <div className="grid">
         {ORDER.map((key) => {
           const c = session.characters.find((x) => x.key === key)!;
-          return <iframe key={key} ref={frameRefs[key]} title={`${c.name}, ${c.title}`} src={`/?pane=${key}`} className="pane-frame" />;
+          const shown = key === 'director' || key === beside;
+          return <iframe key={key} ref={frameRefs[key]} title={`${c.name}, ${c.title}`} src={`/?pane=${key}`} className={`pane-frame ${shown ? '' : 'aside'}`} />;
         })}
       </div>
-      {tour && ready && <Tour session={session} mode={tour} frames={frames} onExit={endTour} />}
+      {tour && ready && <Tour session={session} mode={tour} frames={frames} onExit={endTour} onFocus={setBeside} />}
     </div>
   );
 }
