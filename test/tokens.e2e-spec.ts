@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { API_KEY_FORMAT, signAccessToken } from '../src/auth/tokens';
+import { sql } from 'kysely';
+import { HousekeepingService } from '../src/housekeeping/housekeeping.service';
 import { createTestApp, TEST_JWT_SECRET, type TestApp } from './support/app';
 import { createKey, createOrg, createUser, type Actor } from './support/world';
 
@@ -79,4 +81,40 @@ test('credentials never appear in responses or list endpoints', async () => {
   const secret = API_KEY_FORMAT.exec(key.headers['x-api-key']!)![2]!;
   expect(secret).toHaveLength(43);
   expect(body).not.toContain(secret);
+});
+
+test("an API key's last use is recorded to the minute, so reads don't each write a row", async () => {
+  const fresh = await createKey(t.owner, orgId, admin.principal.id);
+  const lastUsed = async () => (await t.owner.selectFrom('api_keys').select('last_used_at').where('id', '=', fresh.principal.id).executeTakeFirstOrThrow()).last_used_at;
+  expect(await lastUsed()).toBeNull();
+  await t.http().get('/me').set(fresh.headers).expect(200);
+  const first = await lastUsed();
+  expect(first).not.toBeNull();
+  await t.http().get('/me').set(fresh.headers).expect(200);
+  expect(await lastUsed()).toEqual(first);
+  await t.owner.updateTable('api_keys').set({ last_used_at: new Date(Date.now() - 5 * 60_000) }).where('id', '=', fresh.principal.id).execute();
+  await t.http().get('/me').set(fresh.headers).expect(200);
+  expect((await lastUsed())!.getTime()).toBeGreaterThan(Date.now() - 60_000);
+});
+
+test('housekeeping deletes refresh tokens that can do nothing, and keeps the ones that detect theft', async () => {
+  const family = randomUUID();
+  const row = (name: string, fields: object) => ({
+    org_id: orgId, user_id: admin.principal.id, family_id: family, token_hash: `${name}-${randomUUID()}`,
+    expires_at: new Date(Date.now() + 86_400_000), ...fields,
+  });
+  const days = (n: number) => new Date(Date.now() - n * 86_400_000);
+  await t.owner.insertInto('refresh_tokens').values([
+    row('expired', { expires_at: days(1) }),
+    row('revoked-long-ago', { revoked_at: days(2) }),
+    row('revoked-today', { revoked_at: new Date() }),
+    row('used', { used_at: days(3) }), // presenting this again is how a copy is noticed
+    row('live', {}),
+  ]).execute();
+  const { refreshTokens } = await t.app.get(HousekeepingService).run();
+  expect(refreshTokens).toBeGreaterThanOrEqual(2);
+  const left = (await t.owner.selectFrom('refresh_tokens').select('token_hash').where('family_id', '=', family).execute()).map((r) => r.token_hash.split('-')[0]).sort();
+  expect(left).toEqual(['live', 'revoked', 'used']);
+  // The API's own role still can't delete tokens directly: only through the function.
+  await expect(sql`delete from refresh_tokens`.execute(t.appDb)).rejects.toThrow(/permission denied/);
 });

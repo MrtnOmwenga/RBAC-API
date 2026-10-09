@@ -28,6 +28,7 @@ import { DepartmentsService } from './departments/departments.service';
 import { DocumentsController } from './documents/documents.controller';
 import { DocumentsService } from './documents/documents.service';
 import { HealthController } from './health/health.controller';
+import { HousekeepingService } from './housekeeping/housekeeping.service';
 import { MembersController } from './members/members.controller';
 import { MembersService } from './members/members.service';
 import { ProjectsController } from './projects/projects.controller';
@@ -74,7 +75,7 @@ export class AppModule {
         ApiKeysController, AuditController, HealthController, BriefingsController, DemoController,
       ],
       providers: [
-        AuditService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService, AccessChanges, DemoService,
+        AuditService, HousekeepingService, AuthService, DepartmentsService, MembersService, ProjectsService, DocumentsService, ApiKeysService, BriefingsService, RealtimeService, AccessChanges, DemoService,
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthenticationGuard },
         { provide: APP_INTERCEPTOR, useClass: TenantInterceptor },

@@ -259,8 +259,30 @@ const markedWords: Migration = {
   },
 };
 
+/*
+ * Refresh tokens that can no longer do anything are deleted: expired ones, and revoked ones after a
+ * day. A used token that hasn't expired stays, because presenting it again is how a copied token is
+ * detected. The API role can't delete from the table itself, so this is a SECURITY DEFINER function.
+ */
+const pruneRefreshTokens: Migration = {
+  async up(db: Kysely<unknown>) {
+    await sql`
+      create function auth_prune_refresh_tokens()
+        returns integer language sql volatile security definer set search_path = public
+        as $$ with gone as (delete from refresh_tokens where expires_at < now() or revoked_at < now() - interval '1 day' returning 1)
+              select count(*)::integer from gone $$;
+      revoke all on function auth_prune_refresh_tokens() from public;
+      grant execute on function auth_prune_refresh_tokens() to rbac_app;
+    `.execute(db);
+  },
+  async down(db: Kysely<unknown>) {
+    await sql`drop function auth_prune_refresh_tokens()`.execute(db);
+  },
+};
+
 export const migrations: Record<string, Migration> = {
   '001_initial': initial,
   '002_sharing_and_sections': sharing,
   '003_marked_words': markedWords,
+  '004_prune_refresh_tokens': pruneRefreshTokens,
 };

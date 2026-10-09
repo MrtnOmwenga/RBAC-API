@@ -21,6 +21,7 @@ export interface AuthenticatedRequest extends Request {
 }
 
 const INVALID = 'Missing or invalid credentials';
+const LAST_USED_PRECISION_MS = 60_000;
 
 /**
  * Global guard: checks the credential cryptographically (JWT signature, or API key secret against
@@ -97,9 +98,13 @@ export async function loadPrincipal(trx: Transaction<Database>, credential: Cred
       kind: 'user', id: user.id, orgId: user.org_id, role: user.role, departmentId: user.department_id, clearance: user.clearance,
     } : null;
   }
-  const key = await trx.updateTable('api_keys').set({ last_used_at: new Date() })
+  const key = await trx.selectFrom('api_keys').select(['id', 'org_id', 'department_id', 'scopes', 'last_used_at'])
     .where('id', '=', credential.id).where('revoked_at', 'is', null)
     .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', new Date())]))
-    .returning(['id', 'org_id', 'department_id', 'scopes']).executeTakeFirst();
+    .executeTakeFirst();
+  // "Last used" is for spotting forgotten keys, so a minute's precision is plenty: reads stay reads.
+  if (key && (key.last_used_at === null || Date.now() - key.last_used_at.getTime() > LAST_USED_PRECISION_MS)) {
+    await trx.updateTable('api_keys').set({ last_used_at: new Date() }).where('id', '=', key.id).execute();
+  }
   return key ? { kind: 'integration', id: key.id, orgId: key.org_id, departmentId: key.department_id, scopes: key.scopes } : null;
 }

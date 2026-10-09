@@ -161,6 +161,24 @@ re-checks its open connections for that organization:
 - **Personal `member:<id>` rooms:** these get a "refresh". A member with no access yet learns that
   way when a share arrives.
 
+### When nothing changes but the time
+
+Three things end access with no permission change to announce:
+
+- **A temporary share runs out.** Nobody did anything, so there is no notification. Every few
+  seconds (`REALTIME_SWEEP_SECONDS`) each server asks, for each organization it has connections
+  open for, whether a share's expiry has passed since it last looked. If one has, that
+  organization's connections are re-checked exactly as after a change.
+- **A token expires.** A connection never outlives the token that opened it. The same sweep closes
+  it, and the client reconnects with a fresh token.
+- **A member signs out,** or their session is revoked because a refresh token was used twice.
+  Access tokens carry the session they came from; ending a session is announced on its own
+  channel, and every server closes that session's connections. The member's other sessions stay
+  open.
+
+An open WebSocket keeps a serverless instance awake, so the sweep's timer runs whenever there is
+a connection for it to check.
+
 ### The race, and how it's closed
 
 The re-check runs *after* the change commits, so there was a window: between the commit and the

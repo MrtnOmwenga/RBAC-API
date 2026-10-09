@@ -1,11 +1,12 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
-import { type Kysely, sql } from 'kysely';
+import { Inject, Injectable } from '@nestjs/common';
+import type { Kysely } from 'kysely';
 import { AuditService } from '../audit/audit.service';
 import { hashPassword } from '../auth/passwords';
 import { signAccessToken } from '../auth/tokens';
 import { CONFIG, type Config } from '../config/config';
 import type { Database } from '../database/schema';
+import { HousekeepingService } from '../housekeeping/housekeeping.service';
 import { DB, withTenant } from '../database/tenant';
 import { CLEARANCES, type Role } from '../policy/policy';
 import { NIGHTJAR, sectionState } from './briefing';
@@ -32,37 +33,21 @@ const CAST: Character[] = [
 ];
 
 @Injectable()
-export class DemoService implements OnApplicationBootstrap, OnApplicationShutdown {
-  private readonly logger = new Logger('Demo');
-  private timer?: NodeJS.Timeout;
-
+export class DemoService {
   constructor(
     @Inject(DB) private readonly db: Kysely<Database>,
     @Inject(CONFIG) private readonly config: Config,
     private readonly audit: AuditService,
+    private readonly housekeeping: HousekeepingService,
   ) {}
 
-  onApplicationBootstrap(): void {
-    if (!this.config.DEMO_MODE) return;
-    this.timer = setInterval(() => { void this.cleanup(); }, 5 * 60_000);
-    this.timer.unref();
-  }
-
-  onApplicationShutdown(): void {
-    clearInterval(this.timer);
-  }
-
-  async cleanup(): Promise<number> {
-    try {
-      const { rows } = await sql<{ demo_cleanup: number }>`select demo_cleanup(${`${this.config.DEMO_TTL_MINUTES} minutes`}::interval)`.execute(this.db);
-      return rows[0]?.demo_cleanup ?? 0;
-    } catch (err) {
-      this.logger.warn(`demo cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-      return 0;
-    }
-  }
-
+  /** A new agency. Starting one is also when the expired ones are cleared out. */
   async create() {
+    const [session] = await Promise.all([this.build(), this.housekeeping.nudge()]);
+    return session;
+  }
+
+  private async build() {
     const orgId = randomUUID();
     const ttlSeconds = this.config.DEMO_TTL_MINUTES * 60;
     // Nobody logs in with a password: characters get tokens. The hash is of a random secret.

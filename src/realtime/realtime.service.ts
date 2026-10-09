@@ -9,6 +9,7 @@ import { createDecoder, readVarString, readVarUint, readVarUint8Array } from 'li
 import { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
 import { AuditService } from '../audit/audit.service';
+import { SESSION_CHANNEL } from '../auth/auth.service';
 import { loadPrincipal } from '../auth/authentication';
 import { verifyAccessToken } from '../auth/tokens';
 import { ACCESS_CHANNEL, loadDocumentAccess } from '../briefings/access';
@@ -39,6 +40,9 @@ import { FRAGMENT, maxMarkLevel, project } from './projection';
  * - Any permission change is announced with pg_notify (see briefings/access.ts). Each server
  *   re-checks its open connections for that organization: lost access sends an `access: none`
  *   message and closes the connection, a demotion makes it read-only mid-edit, a promotion makes it writable.
+ * - Two things end access with no change to announce: a temporary share running out, and a token
+ *   expiring. A sweep every few seconds covers both (`sweep`). Signing out is announced on its own
+ *   channel and closes that session's connections on every server.
  *
  * The access token travels in the first WebSocket message, not in a cookie, so there is no ambient
  * credential for a cross-site page to ride on.
@@ -51,6 +55,10 @@ interface Context {
   target: Target;
   access: Access;
   clearance: number;
+  /** The login the token came from, if any: signing out of it closes this connection. */
+  sessionId?: string;
+  /** When the token that opened this connection stops being valid (milliseconds). */
+  expiresAt: number;
 }
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
@@ -95,6 +103,8 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   private readonly fallbacks = new Map<string, NodeJS.Timeout>(); // organization → re-check if no notification comes
   private readonly reprojecting = new Map<string, NodeJS.Timeout>(); // section → pending projection rebuild
   private listener?: Client;
+  private sweeper?: NodeJS.Timeout;
+  private lastSweep = Date.now();
   private closing = false;
   readonly hocuspocus: Hocuspocus<Context>;
 
@@ -148,10 +158,14 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
       });
     });
     await this.listen();
+    // An open WebSocket keeps the instance awake, so this timer runs whenever it has work to do.
+    this.sweeper = setInterval(() => { void this.sweep(); }, this.config.REALTIME_SWEEP_SECONDS * 1000);
+    this.sweeper.unref();
   }
 
   async onApplicationShutdown(): Promise<void> {
     this.closing = true;
+    clearInterval(this.sweeper);
     this.hocuspocus.flushPendingStores();
     this.hocuspocus.closeConnections();
     this.sockets.close();
@@ -163,13 +177,17 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   /** Listens for permission changes from any server instance, reconnecting if the connection drops. */
   private async listen(): Promise<void> {
     const client = new Client({ connectionString: this.config.DATABASE_URL });
-    client.on('notification', (msg) => { if (msg.payload) void this.refresh(msg.payload); });
+    client.on('notification', (msg) => {
+      if (!msg.payload) return;
+      if (msg.channel === SESSION_CHANNEL) this.endSession(msg.payload);
+      else void this.refresh(msg.payload);
+    });
     client.on('error', (err) => {
       this.logger.warn(`permission listener lost: ${err.message}`);
       if (!this.closing) setTimeout(() => { void this.listen(); }, 1000);
     });
     await client.connect();
-    await client.query(`LISTEN ${ACCESS_CHANNEL}`);
+    await client.query(`LISTEN ${ACCESS_CHANNEL}; LISTEN ${SESSION_CHANNEL}`);
     this.listener = client;
   }
 
@@ -187,7 +205,58 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
     if (access === 'none') throw new Error('forbidden');
     connectionConfig.readOnly = target.kind !== 'section' || access !== 'edit';
     this.orgOf.set(room, claims.orgId);
-    return { userId: claims.userId, orgId: claims.orgId, target, access, clearance };
+    return {
+      userId: claims.userId, orgId: claims.orgId, target, access, clearance,
+      ...(claims.sessionId ? { sessionId: claims.sessionId } : {}), expiresAt: claims.expiresAt.getTime(),
+    };
+  }
+
+  private *connections(orgId?: string): Generator<[Connection<Context>, string]> {
+    for (const [room, document] of this.hocuspocus.documents) {
+      const org = this.orgOf.get(room);
+      if (!org || (orgId && org !== orgId)) continue;
+      for (const connection of document.getConnections() as Connection<Context>[]) yield [connection, org];
+    }
+  }
+
+  private end(connection: Connection<Context>, code: number, reason: string): void {
+    this.locked.delete(connection);
+    connection.sendStateless(JSON.stringify({ type: 'access', access: 'none' }));
+    connection.close({ code, reason });
+  }
+
+  /** A member signed out (or their session was revoked as stolen): its connections close. */
+  private endSession(payload: string): void {
+    const [orgId, sessionId] = payload.split(':');
+    if (!orgId || !sessionId) return;
+    for (const [connection] of [...this.connections(orgId)]) {
+      if (connection.context.sessionId === sessionId) this.end(connection, 4401, 'Signed out');
+    }
+  }
+
+  /**
+   * What no announcement covers, because nothing changed but the time. A connection never outlives
+   * the token that opened it (the client reconnects with a fresh one), and when a temporary share
+   * has run out since the last sweep, the organization's connections are re-checked.
+   */
+  async sweep(now = Date.now()): Promise<void> {
+    const since = this.lastSweep;
+    this.lastSweep = now;
+    const orgs = new Set<string>();
+    for (const [connection, orgId] of [...this.connections()]) {
+      if (connection.context.expiresAt <= now) this.end(connection, 4401, 'Session expired');
+      else orgs.add(orgId);
+    }
+    for (const orgId of orgs) {
+      try {
+        const lapsed = await withTenant(this.db, orgId, (trx) => trx.selectFrom('document_grants').select('id')
+          .where('expires_at', '>', new Date(since)).where('expires_at', '<=', new Date(now)).limit(1).executeTakeFirst());
+        if (lapsed) await this.refresh(orgId);
+      } catch (err) {
+        this.lastSweep = Math.min(this.lastSweep, since); // look at this stretch of time again
+        this.logger.warn(`sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /** The highest level marked in a section: live if it's open (the stored value lags saves). */
@@ -333,11 +402,8 @@ export class RealtimeService implements OnApplicationBootstrap, OnApplicationShu
   }
 
   private *sectionConnections(orgId: string): Generator<Connection<Context>> {
-    for (const [room, document] of this.hocuspocus.documents) {
-      if (this.orgOf.get(room) !== orgId) continue;
-      for (const connection of document.getConnections() as Connection<Context>[]) {
-        if (connection.context.target.kind === 'section') yield connection;
-      }
+    for (const [connection] of this.connections(orgId)) {
+      if (connection.context.target.kind === 'section') yield connection;
     }
   }
 
