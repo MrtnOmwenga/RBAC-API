@@ -45,7 +45,7 @@ test("rate limits count the visitor's address as the proxy reports it, not the p
 test("housekeeping can be run by the proxy's scheduled call, and by nobody else", async () => {
   await t.http().post('/internal/housekeeping').expect(404);
   const res = await t.http().post('/internal/housekeeping').set(viaEdge).expect(200);
-  expect(res.body).toEqual({ demos: expect.any(Number) as number, refreshTokens: expect.any(Number) as number });
+  expect(res.body).toEqual({ demos: expect.any(Number) as number, refreshTokens: expect.any(Number) as number, checkpoints: expect.any(Number) as number });
 });
 
 test('without a secret configured, the internal path does not exist', async () => {

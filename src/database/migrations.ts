@@ -319,10 +319,35 @@ const refreshSuccessor: Migration = {
   },
 };
 
+/*
+ * Where each organization's audit log ends, for those whose log grew recently: housekeeping signs
+ * a checkpoint for each and writes it to the service's log stream, which the database owner can't
+ * edit. Demo agencies are left out. The API role can't read across organizations itself.
+ */
+const auditHeads: Migration = {
+  async up(db: Kysely<unknown>) {
+    await sql`
+      create function audit_heads(p_since interval)
+        returns table (org_id uuid, seq integer, hash text) language sql stable security definer set search_path = public
+        as $$ select distinct on (e.org_id) e.org_id, e.seq, e.hash
+                from audit_events e join organizations o on o.id = e.org_id
+               where not o.is_demo
+                 and exists (select from audit_events r where r.org_id = e.org_id and r.at > now() - p_since)
+               order by e.org_id, e.seq desc $$;
+      revoke all on function audit_heads(interval) from public;
+      grant execute on function audit_heads(interval) to rbac_app;
+    `.execute(db);
+  },
+  async down(db: Kysely<unknown>) {
+    await sql`drop function audit_heads(interval)`.execute(db);
+  },
+};
+
 export const migrations: Record<string, Migration> = {
   '001_initial': initial,
   '002_sharing_and_sections': sharing,
   '003_marked_words': markedWords,
   '004_prune_refresh_tokens': pruneRefreshTokens,
   '005_refresh_successor': refreshSuccessor,
+  '006_audit_heads': auditHeads,
 };

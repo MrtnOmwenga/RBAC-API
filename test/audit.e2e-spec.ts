@@ -1,7 +1,9 @@
 import { sql } from 'kysely';
 import type { Response } from 'supertest';
-import { type StoredEvent, verifyChain } from '../src/audit/chain';
-import { createTestApp, type TestApp } from './support/app';
+import { eventHash, type StoredEvent, verifyChain } from '../src/audit/chain';
+import { type Checkpoint, checkpointKey } from '../src/audit/checkpoint';
+import { HousekeepingService } from '../src/housekeeping/housekeeping.service';
+import { createTestApp, TEST_JWT_SECRET, type TestApp } from './support/app';
 import { createDepartment, createOrg, createUser } from './support/world';
 
 let t: TestApp;
@@ -154,5 +156,79 @@ describe('what the log records beyond changes', () => {
     await t.http().get('/projects/00000000-0000-4000-8000-000000000000').set(admin.headers).expect(404);
     await t.http().post('/departments').set(admin.headers).send({}).expect(400);
     expect((await t.http().get('/audit-events').set(admin.headers).expect(200)).body).toEqual([]);
+  });
+});
+
+describe('checkpoints: what the chain alone cannot show', () => {
+  async function agencyWithHistory() {
+    const orgId = await createOrg(t.owner);
+    const admin = await createUser(t.owner, orgId, 'org_admin', null);
+    for (const name of ['A', 'B', 'C', 'D']) await t.http().post('/departments').set(admin.headers).send({ name }).expect(201);
+    const checkpoint = (await t.http().get('/audit-events/checkpoint').set(admin.headers).expect(200)).body as Checkpoint;
+    const against = async () => (await t.http().post('/audit-events/verify').set(admin.headers).send({ checkpoint }).expect(200)).body as { ok: boolean; events: number; checkpoint: { ok: boolean; reason?: string } };
+    return { orgId, admin, checkpoint, against };
+  }
+
+  test('a checkpoint is where the log ends, signed with a key the database does not hold', async () => {
+    const a = await agencyWithHistory();
+    const last = await t.owner.selectFrom('audit_events').select(['seq', 'hash']).where('org_id', '=', a.orgId).orderBy('seq', 'desc').executeTakeFirstOrThrow();
+    expect(a.checkpoint).toMatchObject({ orgId: a.orgId, seq: 4, hash: last.hash });
+    const key = (await t.http().get('/audit-events/checkpoint-key').set(a.admin.headers).expect(200)).body as { publicKey: string };
+    expect(key.publicKey).toBe(checkpointKey(TEST_JWT_SECRET).publicKey);
+    expect(await a.against()).toEqual({ ok: true, events: 4, checkpoint: { ok: true } });
+    // The log growing afterwards is fine: the checkpoint's event is still there, unchanged.
+    await t.http().post('/departments').set(a.admin.headers).send({ name: 'E' }).expect(201);
+    expect(await a.against()).toEqual({ ok: true, events: 5, checkpoint: { ok: true } });
+  });
+
+  test('the newest events removed: the chain still verifies, the checkpoint does not', async () => {
+    const a = await agencyWithHistory();
+    await sql`delete from audit_events where org_id = ${a.orgId} and seq > 2`.execute(t.owner);
+    const check = await a.against();
+    expect(check).toMatchObject({ ok: true, events: 2 }); // the chain alone sees nothing wrong
+    expect(check.checkpoint).toEqual({ ok: false, reason: 'the log no longer has event 4: its newest events were removed' });
+  });
+
+  test('history rewritten consistently to the end: the chain still verifies, the checkpoint does not', async () => {
+    const a = await agencyWithHistory();
+    // Someone with the database changes event 2 and recomputes every hash after it.
+    const events = (await t.owner.selectFrom('audit_events').selectAll().where('org_id', '=', a.orgId).orderBy('seq').execute());
+    let prev = events[0]!.hash;
+    for (const e of events.slice(1)) {
+      const content = {
+        seq: e.seq, at: e.at.toISOString(), actorType: e.actor_type, actorId: e.actor_id, action: e.action, resourceType: e.resource_type,
+        resourceId: e.resource_id, detail: e.seq === 2 ? { name: 'Nothing to see' } : e.detail,
+      };
+      const hash = eventHash(prev, content);
+      await sql`update audit_events set detail = ${JSON.stringify(content.detail)}::jsonb, prev_hash = ${prev}, hash = ${hash} where org_id = ${a.orgId} and seq = ${e.seq}`.execute(t.owner);
+      prev = hash;
+    }
+    const check = await a.against();
+    expect(check).toMatchObject({ ok: true, events: 4 });
+    expect(check.checkpoint).toEqual({ ok: false, reason: 'event 4 is not the one the checkpoint saw: the log was rewritten' });
+  });
+
+  test('a forged checkpoint, and one from another organization, are refused', async () => {
+    const a = await agencyWithHistory();
+    const b = await agencyWithHistory();
+    const send = async (checkpoint: unknown) => t.http().post('/audit-events/verify').set(a.admin.headers).send({ checkpoint });
+    expect((await send({ ...a.checkpoint, seq: 2 })).body.checkpoint.ok).toBe(false);
+    expect((await send(b.checkpoint)).body.checkpoint).toEqual({ ok: false, reason: 'the checkpoint is for another organization' });
+    expect((await send({ ...a.checkpoint, extra: true })).status).toBe(400);
+  });
+
+  test('housekeeping writes a checkpoint for each log that grew, to the service\'s log stream', async () => {
+    const a = await agencyWithHistory();
+    const housekeeping = t.app.get(HousekeepingService);
+    const written: Checkpoint[] = [];
+    const spy = jest.spyOn((housekeeping as unknown as { checkpoints: { log: (m: unknown) => void } }).checkpoints, 'log')
+      .mockImplementation((m) => { written.push((m as { checkpoint: Checkpoint }).checkpoint); });
+    Object.assign(housekeeping, { last: Date.now() - 3_600_000 });
+    const done = await housekeeping.run();
+    spy.mockRestore();
+    expect(done.checkpoints).toBe(written.length);
+    const mine = written.find((c) => c.orgId === a.orgId)!;
+    expect(mine).toMatchObject({ seq: 4, hash: a.checkpoint.hash });
+    expect((await t.http().post('/audit-events/verify').set(a.admin.headers).send({ checkpoint: mine }).expect(200)).body.checkpoint).toEqual({ ok: true });
   });
 });
