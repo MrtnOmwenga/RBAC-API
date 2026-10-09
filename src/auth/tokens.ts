@@ -17,24 +17,28 @@ const AUDIENCE = 'rbac-api';
 export interface AccessClaims {
   userId: string;
   orgId: string;
+  /** The login this token descends from (its refresh token family), when it came from one. */
+  sessionId?: string;
 }
 
 export function signAccessToken(secret: string, ttlSeconds: number, claims: AccessClaims): string {
-  return jwt.sign({ org: claims.orgId, typ: 'access' }, secret, {
+  return jwt.sign({ org: claims.orgId, typ: 'access', ...(claims.sessionId ? { sid: claims.sessionId } : {}) }, secret, {
     algorithm: 'HS256', subject: claims.userId, issuer: ISSUER, audience: AUDIENCE, expiresIn: ttlSeconds, jwtid: randomUUID(),
   });
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Returns the claims of a valid access token, or null for anything else. */
-export function verifyAccessToken(secret: string, token: string): AccessClaims | null {
+/** Returns the claims of a valid access token and when it stops being one, or null for anything else. */
+export function verifyAccessToken(secret: string, token: string): (AccessClaims & { expiresAt: Date }) | null {
   try {
     const payload = jwt.verify(token, secret, { algorithms: ['HS256'], issuer: ISSUER, audience: AUDIENCE });
     if (typeof payload !== 'object' || payload.typ !== 'access') return null;
-    const { sub, org } = payload as { sub?: unknown; org?: unknown };
+    const { sub, org, sid, exp } = payload as { sub?: unknown; org?: unknown; sid?: unknown; exp?: unknown };
     if (typeof sub !== 'string' || typeof org !== 'string' || !UUID.test(sub) || !UUID.test(org)) return null;
-    return { userId: sub, orgId: org };
+    if (typeof exp !== 'number') return null; // a token that never expires is not one of ours
+    if (sid !== undefined && (typeof sid !== 'string' || !UUID.test(sid))) return null;
+    return { userId: sub, orgId: org, ...(sid === undefined ? {} : { sessionId: sid }), expiresAt: new Date(exp * 1000) };
   } catch {
     return null;
   }

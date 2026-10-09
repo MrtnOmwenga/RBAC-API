@@ -6,6 +6,7 @@ import { sha256 } from '../common/crypto';
 import { CONFIG, type Config } from '../config/config';
 import type { Database } from '../database/schema';
 import { DB, withTenant } from '../database/tenant';
+import { HousekeepingService } from '../housekeeping/housekeeping.service';
 import { hashPassword, verifyPassword } from './passwords';
 import { newRefreshToken, REFRESH_TOKEN_FORMAT, signAccessToken } from './tokens';
 
@@ -14,6 +15,9 @@ export interface TokenPair {
   refreshToken: string;
   expiresIn: number;
 }
+
+/** Announces a session that has ended (`<organization>:<session>`), so open connections close. */
+export const SESSION_CHANNEL = 'rbac_session_ended';
 
 const INVALID_LOGIN = 'Invalid email or password';
 const INVALID_REFRESH = 'Invalid refresh token';
@@ -26,6 +30,7 @@ export class AuthService {
     @Inject(DB) private readonly db: Kysely<Database>,
     @Inject(CONFIG) private readonly config: Config,
     private readonly audit: AuditService,
+    private readonly housekeeping: HousekeepingService,
   ) {}
 
   /** Creates an organization and its first administrator. */
@@ -52,6 +57,7 @@ export class AuthService {
    * disabled account. Failed attempts are committed even though the request fails.
    */
   async login(email: string, password: string): Promise<TokenPair> {
+    void this.housekeeping.nudge();
     const { rows } = await sql<{ id: string; org_id: string }>`select * from auth_login_lookup(${email})`.execute(this.db);
     const found = rows[0];
     if (!found) {
@@ -102,7 +108,7 @@ export class AuthService {
       const fail = { ok: false as const, error: new UnauthorizedException(INVALID_REFRESH) };
       if (token.revoked_at !== null || token.expires_at <= new Date()) return fail;
       if (token.used_at !== null) {
-        await this.revokeFamily(trx, token.family_id);
+        await this.revokeFamily(trx, found.org_id, token.family_id);
         await this.audit.record(trx, found.org_id, { actorType: 'user', actorId: token.user_id }, {
           action: 'auth.refresh_reuse_detected', resourceType: 'user', resourceId: token.user_id, detail: { family: token.family_id },
         });
@@ -117,7 +123,10 @@ export class AuthService {
     return outcome.value;
   }
 
-  /** Ends a session: its refresh token family stops working. Unknown tokens are ignored. */
+  /**
+   * Ends a session: its refresh token family stops working, and its open live connections are
+   * closed. Unknown tokens are ignored.
+   */
   async logout(refreshToken: string): Promise<void> {
     if (!REFRESH_TOKEN_FORMAT.test(refreshToken)) return;
     const { rows } = await sql<{ id: string; org_id: string }>`select * from auth_refresh_lookup(${sha256(refreshToken)})`.execute(this.db);
@@ -125,7 +134,7 @@ export class AuthService {
     if (!found) return;
     await withTenant(this.db, found.org_id, async (trx) => {
       const token = await trx.selectFrom('refresh_tokens').select(['family_id', 'user_id']).where('id', '=', found.id).executeTakeFirstOrThrow();
-      await this.revokeFamily(trx, token.family_id);
+      await this.revokeFamily(trx, found.org_id, token.family_id);
       await this.audit.record(trx, found.org_id, { actorType: 'user', actorId: token.user_id }, { action: 'auth.logout', resourceType: 'user', resourceId: token.user_id });
     });
   }
@@ -134,8 +143,10 @@ export class AuthService {
     await trx.updateTable('refresh_tokens').set({ revoked_at: new Date() }).where('user_id', '=', userId).where('revoked_at', 'is', null).execute();
   }
 
-  private async revokeFamily(trx: Transaction<Database>, familyId: string): Promise<void> {
+  private async revokeFamily(trx: Transaction<Database>, orgId: string, familyId: string): Promise<void> {
     await trx.updateTable('refresh_tokens').set({ revoked_at: new Date() }).where('family_id', '=', familyId).where('revoked_at', 'is', null).execute();
+    // Delivered on commit, to every server instance.
+    await sql`select pg_notify(${SESSION_CHANNEL}, ${`${orgId}:${familyId}`})`.execute(trx);
   }
 
   private async issue(trx: Transaction<Database>, orgId: string, userId: string, familyId: string): Promise<TokenPair> {
@@ -145,7 +156,7 @@ export class AuthService {
       expires_at: new Date(Date.now() + this.config.REFRESH_TOKEN_TTL_DAYS * 86_400_000),
     }).execute();
     return {
-      accessToken: signAccessToken(this.config.JWT_SECRET, this.config.ACCESS_TOKEN_TTL_SECONDS, { userId, orgId }),
+      accessToken: signAccessToken(this.config.JWT_SECRET, this.config.ACCESS_TOKEN_TTL_SECONDS, { userId, orgId, sessionId: familyId }),
       refreshToken: refresh.token,
       expiresIn: this.config.ACCESS_TOKEN_TTL_SECONDS,
     };
