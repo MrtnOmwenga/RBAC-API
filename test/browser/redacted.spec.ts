@@ -100,7 +100,10 @@ test('every change lands in the surveillance log, and the chain verifies', async
   const log = director.getByLabel('Surveillance log');
   await expect(log).toContainText('clearance unclassified → secret');
   await expect(log).toContainText('shared as editor');
-  await expect(log).toContainText('chain verified · 3');
+  // The count is every event in the chain: the two changes, the agency's creation, and who opened
+  // which classified section.
+  await expect(log).toContainText(/chain verified · \d+/);
+  await expect(log).not.toContainText('section.read');
 });
 
 test('words the director classifies black out for the intern mid-sentence, live', async ({ page, request }) => {

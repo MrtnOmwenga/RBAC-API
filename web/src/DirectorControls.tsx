@@ -17,6 +17,7 @@ const DESCRIBE: Record<string, (d: Record<string, unknown>) => string> = {
   'document.unshare': () => 'share revoked',
   'section.edit': () => 'section edited',
   'organization.create': () => 'agency created',
+  'access.denied': (d) => `refused: ${String(d.required ?? 'a request')}`,
 };
 
 /** The Director's desk: every control is an ordinary API call, made with the Director's token. */
@@ -33,7 +34,9 @@ export function DirectorControls({ session, me, version, onChange }: { session: 
     const [list, grants, events, check] = await Promise.all([
       api<Member[]>(token, '/members'),
       api<Share[]>(token, `/documents/${doc}/shares`),
-      api<AuditEvent[]>(token, '/audit-events?limit=6'),
+      // What changed and what was refused. Who opened which classified section is in the log too
+      // (section.read); listing it here would bury the changes the desk is for.
+      api<AuditEvent[]>(token, '/audit-events?limit=6&exclude=section.read'),
       api<ChainCheck>(token, '/audit-events/verify'),
     ]);
     setMembers(Object.fromEntries(list.map((m) => [m.id, m])));

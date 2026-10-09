@@ -137,6 +137,11 @@ describe('what the log records beyond changes', () => {
       [viewer.principal.id, null, { method: 'POST', route: '/departments', required: 'department:create', reason: 'Not allowed to department:create' }],
       [viewer.principal.id, project, { method: 'DELETE', route: '/projects/:id', required: 'project:delete', reason: 'Not allowed to project:delete' }],
     ]);
+    // Asking again for what was refused is the same refusal, not a new line each time.
+    await t.http().delete(`/projects/${project}`).set(viewer.headers).expect(403);
+    expect((await t.http().get('/audit-events?action=access.denied').set(admin.headers).expect(200)).body).toHaveLength(3);
+    expect((await t.http().get('/audit-events?exclude=access.denied,project.create').set(admin.headers).expect(200)).body).toEqual([]);
+    await t.http().get('/audit-events?exclude=nonsense').set(admin.headers).expect(400);
     // The refusals are links in the same chain as everything else.
     await t.http().get('/audit-events/verify').set(admin.headers).expect(200, { ok: true, events: 4 });
     expect(await t.owner.selectFrom('projects').select('id').where('id', '=', project).executeTakeFirst()).toBeDefined();
