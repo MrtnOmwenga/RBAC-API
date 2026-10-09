@@ -10,7 +10,7 @@ import { AccessChanges } from '../realtime/access-changes';
 type DocumentRow = Awaited<ReturnType<typeof findDocument>>;
 
 const view = (d: DocumentRow) => ({
-  id: d.id, projectId: d.project_id, departmentId: d.department_id, title: d.title, body: d.body,
+  id: d.id, projectId: d.project_id, departmentId: d.department_id, title: d.title,
   authorId: d.author_id, apiKeyId: d.api_key_id, createdAt: d.created_at, updatedAt: d.updated_at,
 });
 // A document is "own" to the member who wrote it; documents written by integrations belong to nobody.
@@ -24,12 +24,12 @@ export class DocumentsService {
     private readonly access: AccessChanges,
   ) {}
 
-  async create(projectId: string, input: { title: string; body: string }) {
+  async create(projectId: string, input: { title: string }) {
     const { db, principal } = this.tenant;
     const project = await findProject(db, projectId);
     authorize(principal, 'document:create', { orgId: project.org_id, departmentId: project.department_id });
     const document = await db.insertInto('documents').values({
-      org_id: principal.orgId, project_id: project.id, department_id: project.department_id, title: input.title, body: input.body,
+      org_id: principal.orgId, project_id: project.id, department_id: project.department_id, title: input.title,
       author_id: principal.kind === 'user' ? principal.id : null,
       api_key_id: principal.kind === 'integration' ? principal.id : null,
       updated_at: new Date(),
@@ -68,7 +68,7 @@ export class DocumentsService {
     return view(document);
   }
 
-  async update(id: string, changes: { title?: string; body?: string }) {
+  async update(id: string, changes: { title: string }) {
     const { db, principal } = this.tenant;
     const { access } = await loadDocumentAccess(db, principal, id);
     if (access !== 'edit') throw new ForbiddenException('Not allowed to document:update');

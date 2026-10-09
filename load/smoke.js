@@ -25,7 +25,7 @@ export function setup() {
   const project = http.post(`${BASE}/projects`, JSON.stringify({ name: 'Load', departmentId: dept }), json(token)).json('id');
   const documents = [];
   for (let i = 0; i < 20; i += 1) {
-    documents.push(http.post(`${BASE}/projects/${project}/documents`, JSON.stringify({ title: `Doc ${i}`, body: 'x'.repeat(2000) }), json(token)).json('id'));
+    documents.push(http.post(`${BASE}/projects/${project}/documents`, JSON.stringify({ title: `Doc ${i}` }), json(token)).json('id'));
   }
   return { token, documents };
 }
@@ -36,6 +36,6 @@ export default function ({ token, documents }) {
   check(http.get(`${BASE}/documents`, { ...params, tags: { kind: 'read' } }), { list: (r) => r.status === 200 });
   check(http.get(`${BASE}/documents/${id}`, { ...params, tags: { kind: 'read' } }), { read: (r) => r.status === 200 });
   if (Math.random() < 0.2) {
-    check(http.patch(`${BASE}/documents/${id}`, JSON.stringify({ body: `edited ${Date.now()}` }), { ...params, tags: { kind: 'write' } }), { write: (r) => r.status === 200 });
+    check(http.patch(`${BASE}/documents/${id}`, JSON.stringify({ title: `Edited ${Date.now()}` }), { ...params, tags: { kind: 'write' } }), { write: (r) => r.status === 200 });
   }
 }

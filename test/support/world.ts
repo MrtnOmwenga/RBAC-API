@@ -73,7 +73,7 @@ export async function createProject(owner: Kysely<Database>, orgId: string, depa
 
 export async function createDocument(owner: Kysely<Database>, orgId: string, projectId: string, departmentId: string, authorId: string) {
   const row = await owner.insertInto('documents').values({
-    org_id: orgId, project_id: projectId, department_id: departmentId, title: 'A document', body: 'Body', author_id: authorId, api_key_id: null, updated_at: new Date(),
+    org_id: orgId, project_id: projectId, department_id: departmentId, title: 'A document', author_id: authorId, api_key_id: null, updated_at: new Date(),
   }).returning('id').executeTakeFirstOrThrow();
   return row.id;
 }

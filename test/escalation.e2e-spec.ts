@@ -22,7 +22,7 @@ async function org() {
 test('fields the client may not set are rejected, not ignored (mass assignment)', async () => {
   const o = await org();
   const project = await createProject(t.owner, o.orgId, o.x);
-  await t.http().post(`/projects/${project}/documents`).set(o.editor.headers).send({ title: 'T', body: 'B', authorId: o.admin.principal.id }).expect(400);
+  await t.http().post(`/projects/${project}/documents`).set(o.editor.headers).send({ title: 'T', authorId: o.admin.principal.id }).expect(400);
   await t.http().post('/projects').set(o.deptAdmin.headers).send({ name: 'P', departmentId: o.x, orgId: o.orgId }).expect(400);
   await t.http().patch(`/documents/${project}`).set(o.editor.headers).send({ departmentId: o.y }).expect(400);
 });
@@ -73,7 +73,7 @@ test('API keys can only hold integration scopes, and only use the ones they hold
   const headers = { 'x-api-key': created.body.key as string };
   const project = await createProject(t.owner, o.orgId, o.x);
   await t.http().get('/documents').set(headers).expect(200);
-  await t.http().post(`/projects/${project}/documents`).set(headers).send({ title: 'T', body: 'B' }).expect(403);
+  await t.http().post(`/projects/${project}/documents`).set(headers).send({ title: 'T' }).expect(403);
   await t.http().get('/members').set(headers).expect(403);
   await t.http().post('/api-keys').set(headers).send({ name: 'escalate', scopes: ['document:create'] }).expect(403);
 });
@@ -82,6 +82,6 @@ test('a department-bound key stays in its department', async () => {
   const o = await org();
   const key = await createKey(t.owner, o.orgId, o.admin.principal.id, { departmentId: o.x });
   const [px, py] = [await createProject(t.owner, o.orgId, o.x), await createProject(t.owner, o.orgId, o.y)];
-  await t.http().post(`/projects/${px}/documents`).set(key.headers).send({ title: 'T', body: 'B' }).expect(201);
-  await t.http().post(`/projects/${py}/documents`).set(key.headers).send({ title: 'T', body: 'B' }).expect(403);
+  await t.http().post(`/projects/${px}/documents`).set(key.headers).send({ title: 'T' }).expect(201);
+  await t.http().post(`/projects/${py}/documents`).set(key.headers).send({ title: 'T' }).expect(403);
 });

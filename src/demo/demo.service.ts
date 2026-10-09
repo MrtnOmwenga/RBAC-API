@@ -68,7 +68,7 @@ export class DemoService {
       const project = await trx.insertInto('projects').values({ org_id: orgId, department_id: divisions.Operations!, name: 'NIGHTJAR', created_by: ids.director! })
         .returning('id').executeTakeFirstOrThrow();
       const document = await trx.insertInto('documents').values({
-        org_id: orgId, project_id: project.id, department_id: divisions.Operations!, title: NIGHTJAR.title, body: '',
+        org_id: orgId, project_id: project.id, department_id: divisions.Operations!, title: NIGHTJAR.title,
         author_id: ids.analyst!, api_key_id: null, updated_at: new Date(),
       }).returning('id').executeTakeFirstOrThrow();
       for (const [i, s] of NIGHTJAR.sections.entries()) {
