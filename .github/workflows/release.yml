@@ -1,34 +1,61 @@
 name: Release
 
-# Every push to master publishes an image for amd64 and arm64, tagged <unix time>-<short sha> (for
-# Flux, on the Kubernetes path in MrtnOmwenga/lighthouse's deploy/) and signed with cosign (keyless,
-# through GitHub's OIDC identity). The deploy job then ships it to Cloud Run, where the live demo
-# runs (lighthouse's deploy/cloudrun): no stored cloud credentials, only GitHub's OIDC token
-# exchanged through Workload Identity Federation, which Google accepts only from this repository's
-# master branch.
+# Runs when CI has passed on a commit pushed to master: never on a commit CI hasn't passed. It
+# publishes an image for amd64 and arm64, tagged <unix time>-<short sha> (for Flux, on the
+# Kubernetes path in MrtnOmwenga/lighthouse's deploy/) and signed with cosign (keyless, through
+# GitHub's OIDC identity). The deploy job then ships it to Cloud Run, where the live demo runs
+# (lighthouse's deploy/cloudrun): no stored cloud credentials, only GitHub's OIDC token exchanged
+# through Workload Identity Federation, which Google accepts only from this repository's master
+# branch.
+#
+# The deploy checks the signature, migrates, starts the new revision without traffic and tests it
+# there, moves traffic, tests again through the edge, and moves traffic back if that fails.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [master]
-  workflow_dispatch:
+  workflow_dispatch: # release master's head again by hand; CI must still have passed on it
+
+env:
+  # The commit being released: the one CI just passed, not whatever master points at by now.
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 permissions:
   contents: read
   packages: write
   id-token: write # cosign keyless signing
+  actions: read # to confirm CI passed on the commit
 
 jobs:
   image:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     outputs:
       image: ${{ steps.tags.outputs.image }}
       tag: ${{ steps.tags.outputs.tag }}
       digest: ${{ steps.build.outputs.digest }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4 # native Node modules are built for arm64 under emulation
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      # Started by CI finishing, the job's condition above is the proof. Started by hand, ask:
+      # a few times, because a run that has only just finished can be missing from the list.
+      - name: CI passed on this commit
+        if: github.event_name == 'workflow_dispatch'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          for attempt in 1 2 3 4 5; do
+            passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&status=success" --jq '.total_count')
+            [ "$passed" -gt 0 ] && exit 0
+            sleep 6
+          done
+          echo "CI has not passed on $SHA; not releasing it."; exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ env.SHA }}" }
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4 # native Node modules are built for arm64 under emulation
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -36,9 +63,10 @@ jobs:
       - name: Tags
         id: tags
         run: |
-          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-          echo "tag=$(date +%s)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v7
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "tag=$(date +%s)-${SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         id: build
         with:
           context: .
@@ -51,7 +79,7 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: true
           sbom: true
-      - uses: sigstore/cosign-installer@v4.1.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign
         run: cosign sign --yes "${{ steps.tags.outputs.image }}@${{ steps.build.outputs.digest }}"
 
@@ -68,29 +96,75 @@ jobs:
       REGION: ${{ vars.GCP_REGION }}
       TARGET: ${{ vars.GCP_REGISTRY }}/redacted:${{ needs.image.outputs.tag }}
     steps:
-      - uses: google-github-actions/auth@v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - uses: imjasonh/setup-crane@v0.7
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Verify the image was signed by this workflow, on master
+        env:
+          SOURCE: ${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}
+        run: |
+          crane auth login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+          cosign verify "$SOURCE" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/master" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+          echo "Signature verified: $SOURCE"
       - name: Copy the signed image to Artifact Registry (amd64, which is what Cloud Run runs)
         id: copy
         run: |
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
-          crane auth login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
           crane copy --platform linux/amd64 "${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}" "$TARGET"
           echo "ref=${TARGET%:*}@$(crane digest "$TARGET")" >> "$GITHUB_OUTPUT"
+      # Migrations run before the new code takes traffic, so each one must also work with the
+      # release that is live now: add first, remove in a later release.
       - name: Migrate
+        id: migrate
         run: |
           gcloud run jobs update "$MIGRATE_JOB" --region "$REGION" --image "${{ steps.copy.outputs.ref }}" --quiet
           gcloud run jobs execute "$MIGRATE_JOB" --region "$REGION" --wait --quiet
-      - name: Deploy
-        run: gcloud run services update "$SERVICE" --region "$REGION" --image "${{ steps.copy.outputs.ref }}" --quiet
+      - name: Show the migration's output
+        if: failure() && steps.migrate.outcome == 'failure'
+        run: |
+          gcloud logging read "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"$MIGRATE_JOB\"" \
+            --freshness=20m --limit=200 --order=asc --format='value(timestamp,textPayload,jsonPayload.msg,jsonPayload.err)'
+      - name: Start the new revision without traffic
+        id: candidate
+        run: |
+          previous=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.latestReadyRevisionName)')
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          gcloud run services update "$SERVICE" --region "$REGION" --image "${{ steps.copy.outputs.ref }}" --no-traffic --quiet
+          # Tagged afterwards, as a traffic change: passing --tag to the update would write the
+          # revision's name into the service's template, and the next Terraform change to the
+          # service would then be refused for reusing that name.
+          candidate=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.latestCreatedRevisionName)')
+          gcloud run services update-traffic "$SERVICE" --region "$REGION" --set-tags "candidate=$candidate" --quiet
+          url=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')
+          echo "url=https://candidate---${url#https://}" >> "$GITHUB_OUTPUT"
+      - name: Test the new revision before it serves anyone
+        run: |
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${{ steps.candidate.outputs.url }}/health/ready") && [ "$code" = 200 ] && exit 0
+            sleep 3
+          done
+          echo "The new revision's /health/ready answered $code; traffic stays on ${{ steps.candidate.outputs.previous }}."; exit 1
+      - name: Move traffic to the new revision
+        run: gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-latest --quiet
       - name: Smoke test through the edge
+        id: smoke
         run: |
           for i in $(seq 1 20); do
             code=$(curl -s -o /dev/null -w '%{http_code}' https://redacted.martinomwenga.com/health/ready) && [ "$code" = 200 ] && exit 0
             sleep 3
           done
           echo "https://redacted.martinomwenga.com/health/ready answered $code"; exit 1
+      - name: Roll back
+        if: failure() && steps.smoke.outcome == 'failure'
+        run: |
+          gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-revisions "${{ steps.candidate.outputs.previous }}=100" --quiet
+          echo "Traffic is back on ${{ steps.candidate.outputs.previous }}."
+      - name: Remove the candidate tag
+        if: always() && steps.candidate.outcome == 'success'
+        run: gcloud run services update-traffic "$SERVICE" --region "$REGION" --remove-tags candidate --quiet
