@@ -216,6 +216,31 @@ Remaining limits:
   nobody else sees them and they aren't saved, but the demoted client's copy still shows them
   until it reloads.
 
+### Several server instances
+
+Each instance keeps its own copy of an open section in memory. Permission changes always crossed
+instances (they are announced through the database); edits did not, until a test with two
+instances was written and showed an edit accepted by one never reaching a reader on the other,
+and each instance's save overwriting the other's.
+
+Now an edit accepted by one instance is sent to the others through PostgreSQL `NOTIFY`, which
+every instance already listens on, and applied to their copies. No extra service is needed.
+
+| Situation | What happens |
+|---|---|
+| An edit on one instance | Sent as a CRDT update; the others apply it. Updates merge in any order, so nothing needs sequencing. |
+| An instance opens a section others are editing | The database lags unsaved typing, so the newcomer says what it has and whoever has more answers with the difference. |
+| An update too large for a notification (8000 bytes) | The sender saves first and tells the others to read it from the database. |
+| Two instances save | Each merges what is stored into its copy before saving, so a save can only add. |
+| Words classified on one instance, a reader below them on another | The receiving instance disconnects that reader *before* applying the update, as the accepting instance does for its own. |
+
+Tests run two instances that share only the database and put people on different ones: edits in
+both directions, a late joiner, concurrent saves, a paste of nine thousand characters,
+classification, demotion and sign-out all cross. With the sending line removed, five of the
+seven fail.
+
+Still per instance: the cursors and names of who is typing (awareness), and the rate limits.
+
 ## 4. Summary of guarantees
 
 | Guarantee | Enforced by | Proven by |
