@@ -5,10 +5,11 @@ import { pageQuery } from '../common/pagination';
 import { DocumentsService } from './documents.service';
 
 const title = z.string().trim().min(1).max(200);
-const body = z.string().max(100_000);
-const createBody = z.strictObject({ title, body });
-const updateBody = z.strictObject({ title: title.optional(), body: body.optional() })
-  .refine((b) => b.title !== undefined || b.body !== undefined, 'Change the title, the body or both');
+// A document is a title and its sections. It has no text of its own: text lives in sections,
+// where it is classified. A field outside them would be readable by anyone who can open the
+// document, whatever their clearance.
+const createBody = z.strictObject({ title });
+const updateBody = z.strictObject({ title });
 const listQuery = z.strictObject({ ...pageQuery, projectId: z.uuid().optional() });
 
 @Controller()

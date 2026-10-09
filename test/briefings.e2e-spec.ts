@@ -124,3 +124,14 @@ test('every change is in the audit log', async () => {
   expect(events.map((e) => e.action)).toEqual(['document.share', 'member.update']);
   expect(events[1]!.detail).toMatchObject({ from: { clearance: 'unclassified' }, to: { clearance: 'confidential' } });
 });
+
+test('a document has no text outside its sections: nothing to read around a classification', async () => {
+  const a = await agency();
+  const project = (await t.owner.selectFrom('documents').select('project_id').where('id', '=', a.doc).executeTakeFirstOrThrow()).project_id;
+  // The field that used to hold a document's own text is refused, not silently dropped.
+  await t.http().post(`/projects/${project}/documents`).set(a.analyst.headers).send({ title: 'Plan', body: 'the whole plan' }).expect(400);
+  await t.http().patch(`/documents/${a.doc}`).set(a.analyst.headers).send({ body: 'the whole plan' }).expect(400);
+  const created = await t.http().post(`/projects/${project}/documents`).set(a.analyst.headers).send({ title: 'Plan' }).expect(201);
+  expect(created.body).not.toHaveProperty('body');
+  expect((await t.http().get(`/documents/${a.doc}`).set(a.intern.headers).expect(200)).body).not.toHaveProperty('body');
+});

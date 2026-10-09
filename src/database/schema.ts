@@ -77,7 +77,6 @@ export interface DocumentsTable {
   project_id: string;
   department_id: string;
   title: string;
-  body: string;
   author_id: string | null;
   api_key_id: string | null;
   created_at: CreatedAt;

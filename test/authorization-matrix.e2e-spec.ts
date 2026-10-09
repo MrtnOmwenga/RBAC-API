@@ -164,7 +164,7 @@ const SCENARIOS: Scenario[] = [
 
   ...inTargets('document:create', 201, async (world, target) => {
     const project = await createProject(t.owner, orgOf(world, target), deptOf(world, target));
-    return { request: (http, a) => as(http().post(`/projects/${project}/documents`), a).send({ title: 'Notes', body: 'Hello' }) };
+    return { request: (http, a) => as(http().post(`/projects/${project}/documents`), a).send({ title: 'Notes' }) };
   }),
   ...documentScenarios('document:read', 200, (http, id, a) => as(http().get(`/documents/${id}`), a)),
   ...documentScenarios('document:update', 200, (http, id, a) => as(http().patch(`/documents/${id}`), a).send({ title: 'Edited' })),

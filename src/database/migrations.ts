@@ -343,6 +343,21 @@ const auditHeads: Migration = {
   },
 };
 
+/*
+ * Documents stop having text of their own (`body`): text lives in sections, where it is classified.
+ * Done in two releases, because a migration runs while the previous release is still serving: this
+ * one makes the column optional, so both the old code (which writes it) and the new (which doesn't)
+ * work. A later release drops the column, once nothing that writes it is running.
+ */
+const documentBodyOptional: Migration = {
+  async up(db: Kysely<unknown>) {
+    await sql`alter table documents alter column body set default ''`.execute(db);
+  },
+  async down(db: Kysely<unknown>) {
+    await sql`alter table documents alter column body drop default`.execute(db);
+  },
+};
+
 export const migrations: Record<string, Migration> = {
   '001_initial': initial,
   '002_sharing_and_sections': sharing,
@@ -350,4 +365,5 @@ export const migrations: Record<string, Migration> = {
   '004_prune_refresh_tokens': pruneRefreshTokens,
   '005_refresh_successor': refreshSuccessor,
   '006_audit_heads': auditHeads,
+  '007_document_body_optional': documentBodyOptional,
 };
