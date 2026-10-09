@@ -124,3 +124,30 @@ test('words the director classifies black out for the intern mid-sentence, live'
   // The Analyst (secret) still reads it, now portion-marked.
   await expect(pane(page, 'analyst').locator('.classified[data-level="2"]').first()).toContainText('Lisbon Maritime');
 });
+
+test('"Is this real?": the visitor makes the requests and reads the server\'s own answers', async ({ page, request }) => {
+  await openWith(page, await newSession(request), '/?room');
+  await page.getByRole('button', { name: 'Is this real?' }).click();
+  const proof = page.getByRole('dialog', { name: 'How do I know this is real?' });
+
+  // What the server says each token is, asked live.
+  await expect(proof.getByRole('row', { name: /J\. Park/ })).toContainText('viewer');
+  await expect(proof.getByRole('row', { name: /J\. Park/ })).toContainText('unclassified');
+  await expect(proof.getByRole('row', { name: /M\. Vance/ })).toContainText('top secret');
+
+  // The Intern's own answer from the server: redacted sections arrive with a length and nothing else.
+  await proof.getByRole('button', { name: 'Fetch the briefing as the Intern' }).click();
+  const answer = proof.locator('.proof-answer').first();
+  await expect(answer).toContainText('200');
+  await expect(answer).toContainText('"redactedLength"');
+  for (const hidden of HIDDEN) await expect(answer).not.toContainText(hidden);
+
+  // And a request the page offers no control for is refused by the server, and recorded.
+  await proof.getByRole('button', { name: 'Try it as the Intern' }).click();
+  await expect(proof.locator('.proof-answer').nth(1)).toContainText('403');
+  await expect(proof.locator('.proof-answer').nth(1)).toContainText('Not allowed to member:update');
+  await page.keyboard.press('Escape');
+  await expect(proof).toHaveCount(0);
+  await pane(page, 'director').getByLabel('J. Park: clearance').selectOption('1'); // any change refreshes the desk
+  await expect(pane(page, 'director').getByLabel('Surveillance log')).toContainText('refused: member:update');
+});
