@@ -32,6 +32,8 @@ export interface Step {
   focus: (Key | 'desk')[];
   /** Play: what to do, and how long to leave the step on screen afterwards (ms). */
   run?: (ctx: TourContext) => Promise<void>;
+  /** Play: whether the effect the caption describes is on screen yet. The hold starts from then. */
+  shown?: (ctx: TourContext) => boolean;
   hold?: number;
   /** Guide: whether the visitor has done it yet (polled). */
   done?: (ctx: TourContext) => Promise<boolean>;
@@ -46,6 +48,9 @@ export async function loadSections(session: Session): Promise<Record<string, str
 }
 
 let typing: Promise<void> = Promise.resolve();
+
+// What a pane's page shows, read straight from its document.
+const sees = (ctx: TourContext, key: Key, text: string) => (ctx.frame(key)?.contentDocument?.body.innerText ?? '').includes(text);
 
 export const PLAY: Step[] = [
   {
@@ -68,7 +73,8 @@ export const PLAY: Step[] = [
       const analyst = await ctx.pane('analyst');
       typing = analyst.typeInto(ctx.sections['The asset']!, ' The handover moves to the old lighthouse at dawn, weather permitting.', 14);
     },
-    hold: 3000,
+    shown: (ctx) => sees(ctx, 'analyst', 'The handover moves'),
+    hold: 2500,
   },
   {
     title: 'Demoted mid-sentence',
@@ -78,6 +84,7 @@ export const PLAY: Step[] = [
       await ctx.asDirector(`/members/${ctx.character('analyst').id}`, { method: 'PATCH', body: { clearance: 1 } });
       await typing;
     },
+    shown: (ctx) => !sees(ctx, 'analyst', 'The handover moves'),
     hold: 6000,
   },
   {
@@ -88,7 +95,8 @@ export const PLAY: Step[] = [
       const director = await ctx.pane('director');
       director.classify(ctx.sections['Cover story']!, 'Lisbon Maritime Trade Fair', 1);
     },
-    hold: 8000,
+    shown: (ctx) => !sees(ctx, 'intern', 'Lisbon Maritime Trade Fair'),
+    hold: 7000,
   },
   {
     title: 'Share it across divisions',
@@ -99,7 +107,8 @@ export const PLAY: Step[] = [
         method: 'POST', body: { subjectType: 'user', subjectId: ctx.character('liaison').id, relation: 'reader' },
       });
     },
-    hold: 8000,
+    shown: (ctx) => sees(ctx, 'liaison', 'Exfiltration'),
+    hold: 7000,
   },
   {
     title: 'Everything is on the record',
@@ -109,8 +118,7 @@ export const PLAY: Step[] = [
   },
 ];
 
-// Text the Intern's page shows, read straight from their document.
-const internSees = (ctx: TourContext, text: string) => (ctx.frame('intern')?.contentDocument?.body.innerText ?? '').includes(text);
+const internSees = (ctx: TourContext, text: string) => sees(ctx, 'intern', text);
 
 export const GUIDE: Step[] = [
   {

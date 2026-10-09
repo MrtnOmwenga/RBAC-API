@@ -7,11 +7,13 @@ import { GUIDE, type Key, loadSections, PLAY, sleep, type Step, type TourContext
 export type TourMode = 'play' | 'guide';
 
 /** The tour's caption card, and the highlighting of the panes it talks about. */
-export function Tour({ session, mode, frames, onExit }: {
+export function Tour({ session, mode, frames, onExit, onFocus }: {
   session: Session;
   mode: TourMode;
   frames: Partial<Record<Key, HTMLIFrameElement | null>>;
   onExit: () => void;
+  /** The pane a step is about, other than the Director's: a narrow screen brings it into view. */
+  onFocus: (key: Key) => void;
 }) {
   const steps = mode === 'play' ? PLAY : GUIDE;
   const [index, setIndex] = useState(0);
@@ -43,6 +45,11 @@ export function Tour({ session, mode, frames, onExit }: {
     };
   }, [session, frames]);
 
+  useEffect(() => {
+    const other = step?.focus.find((f): f is Exclude<Key, 'director'> => f !== 'desk' && f !== 'director');
+    if (other && !finished) onFocus(other);
+  }, [step, finished, onFocus]);
+
   // Highlight the step's panes (and the Director's desk inside their pane); dim the rest.
   useEffect(() => {
     const focus = new Set<string>(step?.focus ?? []);
@@ -72,6 +79,10 @@ export function Tour({ session, mode, frames, onExit }: {
         if (mode === 'play') {
           while (pausedRef.current && !cancelled) await sleep(200);
           await step.run?.(c);
+          // The caption stays until its effect is on screen, however slow the connection: the hold
+          // is time to look at the effect, not time for it to arrive.
+          const patience = Date.now() + 20_000;
+          while (!cancelled && step.shown && !step.shown(c) && Date.now() < patience) await sleep(150);
           const until = Date.now() + (step.hold ?? 5000);
           while (!cancelled && (Date.now() < until || pausedRef.current)) await sleep(200);
         } else {
