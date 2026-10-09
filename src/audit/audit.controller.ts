@@ -1,4 +1,4 @@
-import { Controller, ForbiddenException, Get, Query, Req, Res } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, HttpCode, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { listScope, Requires, ZodPipe } from '../common/http';
@@ -16,6 +16,11 @@ const filter = {
   to: z.coerce.date().optional(),
 };
 const seq = z.coerce.number().int().min(0);
+const checkpointBody = z.strictObject({
+  checkpoint: z.strictObject({
+    orgId: z.uuid(), seq: z.number().int().min(0), hash: z.string().regex(/^[0-9a-f]{64}$/), at: z.iso.datetime(), signature: z.string().max(200),
+  }),
+});
 const listQuery = z.strictObject({ ...filter, limit: z.coerce.number().int().min(1).max(500).default(100), before: seq.optional() });
 const exportQuery = z.strictObject({ ...filter, limit: z.coerce.number().int().min(1).max(5000).default(5000), after: seq.optional() });
 
@@ -50,6 +55,33 @@ export class AuditController {
     }
     res.type('application/x-ndjson').setHeader('Content-Disposition', 'attachment; filename="audit-events.ndjson"');
     return page.items.map((event) => `${JSON.stringify(event)}\n`).join('');
+  }
+
+  /**
+   * Where the log ends right now, signed. Kept outside the database, it later shows what the chain
+   * alone can't: the newest events removed, or everything from some point rewritten.
+   */
+  @Get('checkpoint')
+  @Requires('audit:read')
+  checkpoint() {
+    this.allowed();
+    return this.audit.checkpoint(this.tenant.db, this.tenant.principal.orgId);
+  }
+
+  @Get('checkpoint-key')
+  @Requires('audit:read')
+  checkpointKey() {
+    this.allowed();
+    return { algorithm: 'Ed25519', publicKey: this.audit.checkpointPublicKey };
+  }
+
+  /** Recomputes the chain and checks it against a checkpoint taken earlier. */
+  @Post('verify')
+  @HttpCode(200)
+  @Requires('audit:read')
+  verifyAgainst(@Body(new ZodPipe(checkpointBody)) body: z.infer<typeof checkpointBody>) {
+    this.allowed();
+    return this.audit.verifyAgainst(this.tenant.db, this.tenant.principal.orgId, body.checkpoint);
   }
 
   /** Recomputes the organization's whole hash chain and reports the first break, if any. */

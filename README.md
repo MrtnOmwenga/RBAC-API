@@ -219,6 +219,7 @@ browser.
 | **Escalation** | Mass assignment, department admins creating or promoting beyond their power or outside their department, self-promotion, API keys requesting human-only scopes or acting beyond them. |
 | **Tenancy** | As the API's own database role: no rows without a tenant, only one tenant's rows with one, writes into another tenant refused, the audit log immune to UPDATE and DELETE. |
 | **Audit** | The chain verifies; a row edited directly in the database is pinpointed; failed requests leave no events; 20 concurrent writes keep one linear chain. A refused request is recorded in a transaction of its own while everything else it did rolls back; opening a classified section is recorded once per reader. The log is searched by member, action, resource and time; the export, read back from the file alone, verifies, and an edit to the file is pinpointed. |
+| **Checkpoints** | Where the log ends, signed with a key the database doesn't hold. With the newest events deleted, or history rewritten and every hash recomputed, the chain still verifies and the checkpoint does not; a forged checkpoint or another organization's is refused; housekeeping writes one for every log that grew. |
 | **Paging** | Following the links visits every row exactly once, with 23 rows sharing one timestamp; rows added meanwhile don't shift a page; a page keeps to what the caller may see; a forged cursor is a 400. |
 | **Migrations** | Every migration has a way back: all are applied, undone to an empty schema, and applied again to an identical one (columns, constraints, indexes, policies, functions, grants). |
 | **Auth flows** | Sign-up, generic login failures, lockout, refresh rotation, reuse detection revoking the family, two tabs refreshing at once getting the same pair with nobody signed out, a replay inside that moment gaining no token line of its own, logout, role changes and disabling applying to live tokens; an API key's last use recorded to the minute; dead refresh tokens deleted while the ones that detect theft are kept. |
@@ -290,7 +291,7 @@ and the WebSocket to :3000); set `DEMO_MODE=true` for the API.
 | `GET /documents/:id/briefing` · `POST /documents/:id/sections` · `PATCH`, `DELETE /sections/:id` | sectioned documents, redacted per reader |
 | `GET`, `POST /documents/:id/shares` · `DELETE /documents/:id/shares/:grantId` · `GET /documents/:id/explain` | sharing and "why can I see this?" |
 | `ws /collab` (rooms `section:`, `projection:`, `briefing:`, `member:`) · `POST /demo/sessions` (demo mode) | live editing; the demo |
-| `GET /audit-events?actorId=&action=&resourceId=&from=&to=` · `GET /audit-events/export` (NDJSON) · `GET /audit-events/verify` | audit log: search, export, chain check |
+| `GET /audit-events?actorId=&action=&resourceId=&from=&to=` · `GET /audit-events/export` (NDJSON) · `GET /audit-events/verify` · `GET /audit-events/checkpoint`, `/checkpoint-key` · `POST /audit-events/verify` | audit log: search, export, chain check, and a check against a signed checkpoint taken earlier |
 | `GET /health/live` · `GET /health/ready` | probes |
 
 Lists are a plain array, 100 rows at most (`?limit=`). While there is more, the response has a

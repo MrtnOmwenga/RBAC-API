@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { sql, type Transaction } from 'kysely';
 import { Page } from '../common/pagination';
+import { CONFIG, type Config } from '../config/config';
 import type { Database } from '../database/schema';
 import type { Principal } from '../policy/policy';
+import { checkAgainst, type Checkpoint, type CheckpointCheck, checkpointKey, signCheckpoint } from './checkpoint';
 import { type AuditContent, type ChainCheck, eventHash, genesisHash, type StoredEvent, verifyChain } from './chain';
 
 export interface AuditEntry {
@@ -30,6 +32,37 @@ export const actorOf = (principal: Principal | null): Actor => (principal
 
 @Injectable()
 export class AuditService {
+  private readonly key: ReturnType<typeof checkpointKey>;
+
+  constructor(@Inject(CONFIG) config: Config) {
+    this.key = checkpointKey(config.JWT_SECRET);
+  }
+
+  /** The key checkpoints are signed with, for anyone checking one without asking this service. */
+  get checkpointPublicKey(): string {
+    return this.key.publicKey;
+  }
+
+  /** A signed statement of where the organization's log ends right now. */
+  async checkpoint(trx: Transaction<Database>, orgId: string): Promise<Checkpoint> {
+    const last = await trx.selectFrom('audit_events').select(['seq', 'hash']).where('org_id', '=', orgId).orderBy('seq', 'desc').limit(1).executeTakeFirst();
+    return signCheckpoint(this.key.privateKey, orgId, last, new Date());
+  }
+
+  /** Signs a checkpoint for a log's end read elsewhere (housekeeping reads every organization's at once). */
+  sign(orgId: string, last: { seq: number; hash: string }): Checkpoint {
+    return signCheckpoint(this.key.privateKey, orgId, last, new Date());
+  }
+
+  /** The whole chain, and whether it still agrees with a checkpoint taken earlier. */
+  async verifyAgainst(trx: Transaction<Database>, orgId: string, checkpoint: Checkpoint): Promise<ChainCheck & { checkpoint: CheckpointCheck }> {
+    const chain = await this.verify(trx, orgId);
+    const event = checkpoint.seq > 0
+      ? await trx.selectFrom('audit_events').select('hash').where('org_id', '=', orgId).where('seq', '=', checkpoint.seq).executeTakeFirst()
+      : undefined;
+    return { ...chain, checkpoint: checkAgainst(this.key.privateKey, orgId, checkpoint, event) };
+  }
+
   /**
    * Appends an event inside the caller's transaction, so it commits or rolls back with the change
    * it describes. Appends are serialized per organization with an advisory lock, keeping the
