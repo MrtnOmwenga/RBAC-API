@@ -181,3 +181,25 @@ a { color: #e9ebef; }
   .room.touring .grid { margin-bottom: 0; }
   .tour { position: static; transform: none; width: auto; max-height: 36dvh; border-radius: 0; box-shadow: none; }
 }
+
+/* "How do I know this is real?": requests made in front of the visitor, answers shown as they came */
+.proof-backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.6); display: grid; place-items: center; padding: 1rem; }
+.proof {
+  width: min(760px, 100%); max-height: calc(100dvh - 2rem); overflow: auto;
+  background: #f4efe6; color: #16181d; border-radius: 10px; padding: 1rem 1.25rem 1.25rem; line-height: 1.5;
+}
+.proof header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.proof h2 { margin: 0; font-size: 1.3rem; }
+.proof h3 { margin: 1.1rem 0 0.25rem; font-size: 1rem; }
+.proof p, .proof ol { margin: 0.3rem 0 0.6rem; }
+.proof .ghost { color: #16181d; border-color: #9a9387; min-height: 40px; }
+.proof .primary { margin-top: 0; }
+.proof table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.proof th, .proof td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #d8d1c4; }
+.proof code { font-family: var(--mono, ui-monospace, monospace); font-size: 0.85em; }
+.proof-note { font-size: 0.85rem; color: #4a4a4a; }
+.proof-answer { margin: 0.6rem 0; }
+.proof-answer figcaption { font-size: 0.85rem; margin-bottom: 0.25rem; }
+.proof-answer .ok { color: #1e7e34; font-weight: 700; }
+.proof-answer .refused { color: #a93226; font-weight: 700; }
+.proof-answer pre { margin: 0; max-height: 14rem; overflow: auto; background: #16181d; color: #e8e6e1; border-radius: 6px; padding: 0.6rem 0.75rem; font-size: 0.78rem; }

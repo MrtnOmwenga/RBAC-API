@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Session } from './session';
+import { Proof } from './Proof';
 import { Tour, type TourMode } from './Tour';
 import type { Key } from './tour';
 
@@ -27,6 +28,8 @@ export function Room({ session }: { session: Session }) {
   // On a narrow screen the Director's pane sits above one other pane, so a change and its effect
   // are on screen together. All four panes stay loaded; this only chooses which one is shown.
   const [beside, setBeside] = useState<Key>('analyst');
+  const [proof, setProof] = useState(false);
+  const closeProof = useMemo(() => () => setProof(false), []);
 
   return (
     <div className={`room ${tour ? 'touring' : ''}`}>
@@ -43,6 +46,7 @@ export function Room({ session }: { session: Session }) {
             <button type="button" className="ghost" onClick={() => setTour('guide')}>Guide me</button>
           </>
         )}
+        <button type="button" className="ghost" onClick={() => setProof(true)}>Is this real?</button>
         <button type="button" className="ghost" onClick={restart}>New agency</button>
       </header>
       <div className="pane-switch" role="group" aria-label="Agent shown below the Director">
@@ -59,6 +63,7 @@ export function Room({ session }: { session: Session }) {
           return <iframe key={key} ref={frameRefs[key]} title={`${c.name}, ${c.title}`} src={`/?pane=${key}`} className={`pane-frame ${shown ? '' : 'aside'}`} />;
         })}
       </div>
+      {proof && <Proof session={session} onClose={closeProof} />}
       {tour && ready && <Tour session={session} mode={tour} frames={frames} onExit={endTour} onFocus={setBeside} />}
     </div>
   );
