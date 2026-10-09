@@ -6,7 +6,7 @@ import { parse } from 'yaml';
  * docs/architecture.yaml is drawn as a diagram on the portfolio site, where nothing would notice
  * it going stale. So it is checked here, next to the code it describes.
  */
-interface Part { id: string; lane: string; name: string; what: string; detail: string; code: string[]; handbook?: string }
+interface Part { id: string; lane: string; name: string; what: string; detail: string; code: string[]; handbook?: string; story?: string }
 interface Step { from: string; to: string; title: string; text: string }
 interface Architecture {
   title: string; summary: string; repository: string;
@@ -28,6 +28,7 @@ test('every part has an id of its own, a known lane, and something to say', () =
     expect(part.id).toMatch(ID);
     expect(lanes.has(part.lane)).toBe(true);
     for (const text of [part.name, part.what, part.detail]) expect(text.trim()).not.toBe('');
+    if (part.story !== undefined) expect(part.story).toMatch(/^[a-z][a-z0-9-]*$/);
   }
 });
 
