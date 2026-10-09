@@ -1,7 +1,8 @@
 # How Redacted is put together, as data. The portfolio site draws this file as an interactive
 # diagram (martinomwenga.com/projects/redacted/architecture) and its assistant reads it to walk
 # visitors through the system. A unit test (src/architecture.spec.ts) fails if a part names a file
-# that no longer exists, or a connection or step names a part that isn't here.
+# that no longer exists, or a connection or step names a part that isn't here. `story` names the
+# heading on the site's story page that says more about a part; the site checks those itself.
 title: How Redacted is put together
 summary: >-
   One server process, one PostgreSQL database. The browser talks to the server two ways: ordinary
@@ -27,6 +28,7 @@ parts:
       the data, and there is nothing behind it for the developer tools to find.
     code: [web/src/Room.tsx, web/src/api.ts]
     handbook: redacted/07-demo
+    story: problem
 
   - id: editor
     lane: browser
@@ -37,6 +39,7 @@ parts:
       A section the member can't read has no editor and no connection at all.
     code: [web/src/SectionEditor.tsx, web/src/SectionBoundary.tsx]
     handbook: redacted/06-live-collaboration
+    story: decision-hide-by-structure-not-by-filtering
 
   - id: audit
     lane: server
@@ -58,6 +61,7 @@ parts:
       instead of an answer, so an endpoint that forgets to check can't leak.
     code: [src/members/members.service.ts, src/briefings/briefings.service.ts, src/database/tenant.ts]
     handbook: redacted/01-permissions
+    story: decision-authority-comes-from-the-database-not-the-token
 
   - id: policy
     lane: server
@@ -80,6 +84,7 @@ parts:
       server: edits it sends are dropped, whatever the page shows.
     code: [src/realtime/realtime.service.ts]
     handbook: redacted/06-live-collaboration
+    story: decision-fail-closed-on-permission-changes
 
   - id: projection
     lane: server
@@ -90,6 +95,7 @@ parts:
       length is rounded so it doesn't give away the length of the word behind it.
     code: [src/realtime/projection.ts]
     handbook: redacted/05-redaction
+    story: decision-classify-words-by-projection
 
   - id: tables
     lane: database
@@ -100,6 +106,7 @@ parts:
       filter returns no rows instead of another organization's rows.
     code: [src/database/migrations.ts, src/database/tenant.ts]
     handbook: redacted/02-tenants-and-database
+    story: decision-let-the-database-enforce-tenancy
 
   - id: notices
     lane: database
@@ -110,6 +117,7 @@ parts:
       the change commits. No message broker to run, and no notice for a change that didn't happen.
     code: [src/realtime/access-changes.ts]
     handbook: redacted/06-live-collaboration
+    story: decision-fail-closed-on-permission-changes
 
 connections:
   - { from: page, to: api, label: HTTPS requests }
